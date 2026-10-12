@@ -133,7 +133,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     private func present() {
         let hidden = Store.hidden()
         catalog = Catalog.applyDisplayNames(Catalog.scan().filter { $0.kind == .quit || !hidden.contains($0.id as NSString) })
-            + [.awake(awake != nil), .closedLid(closedLid.state)]
+            + [.awake(awake != nil), .closedLid(closedLid.state), .clean()]
         content.clear()
         shown = true
         refresh()
@@ -265,6 +265,8 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
             }
         case .closedLid:
             toggleClosedLid()
+        case .clean:
+            Clean.run()
         case .target:
             break
         }
