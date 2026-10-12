@@ -7,7 +7,6 @@ struct CleanEnvironment {
     var runningBundles: Set<String> = []
     var runningExecutables: [String] = []
     var docker = false
-    var emptyTrash: @Sendable () -> String? = Clean.emptyTrash
 }
 
 struct CleanReport {
@@ -16,13 +15,12 @@ struct CleanReport {
     var skipped: [String] = []
     var failed: [String] = []
     var docker = ""
-    var trash = ""
 
     var logged: [String: Any] {
         [
             "at": Store.now(), "freed": freed, "removed_total": removed.count,
             "removed": removed.prefix(500).map { $0 },
-            "skipped": skipped, "failed": failed, "docker": docker, "trash": trash,
+            "skipped": skipped, "failed": failed, "docker": docker,
         ]
     }
 }
@@ -57,24 +55,13 @@ enum Clean {
         sweepCaches(env, &report)
         sweepNpx(env, &report)
         sweepAppData(env, &report)
-        if let failure = env.emptyTrash() {
-            report.failed.append(failure)
-        } else {
-            report.trash = "emptied"
-        }
+        sweepTrash(env, &report)
         sweepClaudeVersions(env, &report)
         if env.docker {
             sweepDocker(&report)
         }
         report.freed = freeBytes() - before
         return report
-    }
-
-    @Sendable static func emptyTrash() -> String? {
-        guard let result = command("/usr/bin/osascript", ["-e", "tell application \"Finder\" to empty trash"]) else {
-            return "Trash: could not run Finder"
-        }
-        return result.status == 0 ? nil : "Trash: \(flat(result.output))"
     }
 
     private static func sweepCaches(_ env: CleanEnvironment, _ report: inout CleanReport) {
@@ -117,6 +104,13 @@ enum Clean {
             if isDirectory(update) {
                 remove(update, under: base, &report)
             }
+        }
+    }
+
+    private static func sweepTrash(_ env: CleanEnvironment, _ report: inout CleanReport) {
+        let root = env.home.appendingPathComponent(".Trash")
+        for target in children(of: root, &report) {
+            remove(target, under: root, &report)
         }
     }
 
