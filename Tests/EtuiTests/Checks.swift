@@ -575,6 +575,79 @@ struct ScreenshotChecks {
         #expect(try red(20, 70) && red(160, 20) && !red(70, 70))
     }
 
+    @Test @MainActor func markupTextCommitsCancelsUndoesAndExports() throws {
+        let context = try #require(CGContext(data: nil, width: 400, height: 240, bitsPerComponent: 8, bytesPerRow: 0,
+                                             space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(.white)
+        context.fill(CGRect(x: 0, y: 0, width: 400, height: 240))
+        let image = try #require(context.makeImage())
+        let canvas = MarkCanvas(image: image, unit: 0.5, lineWidth: 6)
+        canvas.tool = .text
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 20, 90))
+        let input = try #require(canvas.subviews.first as? MarkTextView)
+        input.setMarkedText("zhongwen", selectedRange: NSRange(location: 8, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(input.hasMarkedText())
+        input.insertText("中文 English", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!input.hasMarkedText())
+        input.insertNewline(nil)
+        #expect(canvas.marks == [.text("中文 English", NSPoint(x: 40, y: 180))])
+        let exported = try #require(canvas.exported)
+        let bitmap = NSBitmapImageRep(cgImage: exported)
+        var red: [NSPoint] = []
+        for y in 0..<exported.height {
+            for x in 0..<exported.width {
+                let color = try #require(bitmap.colorAt(x: x, y: y))
+                if color.redComponent > 0.8 && color.greenComponent < 0.5 { red.append(NSPoint(x: x, y: y)) }
+            }
+        }
+        #expect(exported.width == 400 && exported.height == 240)
+        #expect(red.count > 200)
+        #expect(red.allSatisfy { $0.x >= 40 && $0.y >= 60 && $0.y < 115 })
+        canvas.undo(nil)
+        #expect(canvas.marks.isEmpty)
+        canvas.redo(nil)
+        #expect(canvas.marks.count == 1)
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 30, 60))
+        let cancelled = try #require(canvas.subviews.first as? MarkTextView)
+        cancelled.insertText("discard", replacementRange: NSRange(location: NSNotFound, length: 0))
+        let escape = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                                  context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        cancelled.keyDown(with: escape)
+        #expect(canvas.marks.count == 1 && canvas.subviews.isEmpty)
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 30, 60))
+        let empty = try #require(canvas.subviews.first as? MarkTextView)
+        empty.insertNewline(nil)
+        #expect(canvas.marks.count == 1)
+    }
+
+    @Test @MainActor func markupInPlaceKeepsScreenCoordinatesAndPlacesToolbar() throws {
+        let context = try #require(CGContext(data: nil, width: 800, height: 600, bitsPerComponent: 8, bytesPerRow: 0,
+                                             space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        let image = try #require(context.makeImage())
+        let visible = NSRect(x: -1440, y: 100, width: 1440, height: 875)
+        for y: CGFloat in [200, 670] {
+            let region = NSRect(x: -1000, y: y, width: 400, height: 300)
+            let editor = MarkEditor(image: image, scale: 2, visible: visible, region: region)
+            #expect(editor.canvas.unit == 0.5)
+            #expect(editor.canvas.frame.offsetBy(dx: editor.panel.frame.minX, dy: editor.panel.frame.minY) == region)
+            #expect(visible.contains(editor.panel.frame))
+            let toolbar = try #require(editor.panel.contentView?.subviews.last as? GlassPanel)
+            let global = toolbar.frame.offsetBy(dx: editor.panel.frame.minX, dy: editor.panel.frame.minY)
+            #expect(y == 200 ? global.minY > region.maxY : global.maxY < region.minY)
+        }
+        let tall = try #require(CGContext(data: nil, width: 800, height: 1730, bitsPerComponent: 8, bytesPerRow: 0,
+                                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue).flatMap { $0.makeImage() })
+        let region = NSRect(x: -1000, y: 105, width: 400, height: 865)
+        let inside = MarkEditor(image: tall, scale: 2, visible: visible, region: region)
+        let toolbar = try #require(inside.panel.contentView?.subviews.last as? GlassPanel)
+        #expect(region.contains(toolbar.frame.offsetBy(dx: inside.panel.frame.minX, dy: inside.panel.frame.minY)))
+        let fallback = MarkEditor(image: tall, scale: 2, visible: visible, region: region.offsetBy(dx: 0, dy: -10))
+        #expect(fallback.canvas.unit < 0.5)
+        #expect(visible.contains(fallback.panel.frame))
+    }
+
     @Test @MainActor func markupEditorFitsScreenAndRoutesKeys() throws {
         let context = try #require(CGContext(data: nil, width: 4000, height: 3000, bitsPerComponent: 8, bytesPerRow: 0,
                                              space: CGColorSpaceCreateDeviceRGB(),

@@ -331,7 +331,11 @@ final class Screenshot {
                     let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
                     guard !Task.isCancelled else { return }
                     if annotate {
-                        edit(image, scale: CGFloat(filter.pointPixelScale), screen: screen)
+                        let desktopTop = NSScreen.screens.first?.frame.maxY ?? 0
+                        let region = window.map {
+                            NSRect(x: $0.frame.minX, y: desktopTop - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height)
+                        } ?? rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
+                        edit(image, scale: CGFloat(filter.pointPixelScale), screen: screen, region: region)
                     } else {
                         copy(image)
                     }
@@ -340,8 +344,8 @@ final class Screenshot {
         }
     }
 
-    private func edit(_ image: CGImage, scale: CGFloat, screen: NSScreen) {
-        let editor = MarkEditor(image: image, scale: scale, visible: screen.visibleFrame)
+    private func edit(_ image: CGImage, scale: CGFloat, screen: NSScreen, region: NSRect) {
+        let editor = MarkEditor(image: image, scale: scale, visible: screen.visibleFrame, region: region)
         editor.panel.onCancel = { [weak self] in self?.cancel() }
         editor.panel.onSubmit = { [weak self, weak canvas = editor.canvas] in
             guard let self, let canvas else { return }
