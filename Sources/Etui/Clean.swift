@@ -164,11 +164,21 @@ enum Clean {
             return
         }
         let before = command(docker, ["--context", "colima", "system", "df"])?.output ?? ""
-        _ = command(docker, ["--context", "colima", "container", "prune", "--force"])
-        _ = command(docker, ["--context", "colima", "image", "prune", "--force"])
-        _ = command(docker, ["--context", "colima", "buildx", "prune", "--builder", "colima", "--filter", "until=24h", "--force"])
+        prune(docker, ["--context", "colima", "container", "prune", "--force"], "container prune", &report)
+        prune(docker, ["--context", "colima", "image", "prune", "--force"], "image prune", &report)
+        prune(docker, ["--context", "colima", "buildx", "prune", "--builder", "colima", "--filter", "until=24h", "--force"], "buildx prune", &report)
         let after = command(docker, ["--context", "colima", "system", "df"])?.output ?? ""
         report.docker = "before [\(flat(before))] after [\(flat(after))]"
+    }
+
+    private static func prune(_ docker: String, _ arguments: [String], _ label: String, _ report: inout CleanReport) {
+        guard let result = command(docker, arguments, capture: false) else {
+            report.failed.append("docker \(label): could not run")
+            return
+        }
+        if result.status != 0 {
+            report.failed.append("docker \(label): exit \(result.status)")
+        }
     }
 
     private static func remove(_ target: URL, under root: URL, _ report: inout CleanReport) {
@@ -252,35 +262,42 @@ enum Clean {
         }
     }
 
-    @discardableResult
-    static func command(_ tool: String, _ arguments: [String], timeout: TimeInterval = 120) -> (status: Int32, output: String)? {
+    private static func command(_ tool: String, _ arguments: [String], capture: Bool = true, timeout: TimeInterval = 120) -> (status: Int32, output: String)? {
         let process = Process()
-        let pipe = Pipe()
+        let pipe = capture ? Pipe() : nil
         process.executableURL = URL(fileURLWithPath: tool)
         process.arguments = arguments
-        process.standardOutput = pipe
-        process.standardError = pipe
+        if let pipe {
+            process.standardOutput = pipe
+            process.standardError = pipe
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
         do {
             try process.run()
         } catch {
             return nil
         }
-        let handle = pipe.fileHandleForReading
+        let handle = pipe?.fileHandleForReading
         var buffer = Data()
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
-            var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
-            if poll(&descriptor, 1, 50) > 0 {
-                let chunk = (try? handle.read(upToCount: 65536)) ?? nil
-                if let chunk, !chunk.isEmpty {
+            if let handle {
+                var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+                if poll(&descriptor, 1, 50) > 0, let chunk = (try? handle.read(upToCount: 65536)) ?? nil, !chunk.isEmpty {
                     buffer.append(chunk)
+                    continue
                 }
             }
+            Thread.sleep(forTimeInterval: 0.05)
         }
         if process.isRunning {
             process.terminate()
         }
-        buffer.append((try? handle.readToEnd()) ?? Data())
+        if let handle {
+            buffer.append((try? handle.readToEnd()) ?? Data())
+        }
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: buffer, as: UTF8.self))
     }
