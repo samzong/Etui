@@ -697,6 +697,11 @@ private func present(_ url: URL) -> Bool {
 }
 
 @Suite struct CleanChecks {
+    private func environment(_ home: URL, bundles: Set<String> = [], executables: [String] = [],
+                             emptyTrash: @escaping @Sendable () -> String? = { nil }) -> CleanEnvironment {
+        CleanEnvironment(home: home, runningBundles: bundles, runningExecutables: executables, emptyTrash: emptyTrash)
+    }
+
     @Test func entryAnswersToItsAlias() {
         let history = History()
         let entries = [Entry.clean()]
@@ -712,13 +717,14 @@ private func present(_ url: URL) -> Bool {
         for name in ["go-build", "ms-playwright", "Mozilla.sccache", "com.apple.e5rt.e5bundlecache"] {
             try fill(caches.appendingPathComponent(name))
         }
-        let report = Clean.execute(CleanEnvironment(home: home))
+        let report = Clean.execute(environment(home))
         #expect(!present(caches.appendingPathComponent("com.example.app")))
         #expect(present(caches.appendingPathComponent("go-build")))
         #expect(present(caches.appendingPathComponent("Mozilla.sccache")))
         #expect(present(caches.appendingPathComponent("com.apple.e5rt.e5bundlecache")))
         #expect(present(caches))
-        #expect(report.removed == 1)
+        #expect(report.removed.count == 1)
+        #expect(report.removed.first?.hasSuffix("Library/Caches/com.example.app") == true)
         #expect(report.skipped.contains("Caches/go-build"))
     }
 
@@ -733,24 +739,57 @@ private func present(_ url: URL) -> Bool {
         let caches = home.appendingPathComponent("Library/Caches")
         try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: caches.appendingPathComponent("trap"), withDestinationURL: outside)
-        let report = Clean.execute(CleanEnvironment(home: home))
+        let report = Clean.execute(environment(home))
         #expect(present(outside.appendingPathComponent("payload")))
-        #expect(report.removed == 0)
+        #expect(report.removed.isEmpty)
         #expect(report.skipped.contains { $0.hasPrefix("trap ") })
     }
 
-    @Test func emptiesTrashAndNpxCache() throws {
+    @Test func emptiesNpxCacheAndReportsTrash() throws {
         let home = try tempHome()
         defer { try? FileManager.default.removeItem(at: home) }
-        try fill(home.appendingPathComponent(".Trash/old-report"))
         try fill(home.appendingPathComponent(".npm/_npx/abc123"))
         try fill(home.appendingPathComponent(".npm/cache-keep"))
-        let report = Clean.execute(CleanEnvironment(home: home))
-        #expect(!present(home.appendingPathComponent(".Trash/old-report")))
+        let report = Clean.execute(environment(home))
         #expect(!present(home.appendingPathComponent(".npm/_npx")))
         #expect(present(home.appendingPathComponent(".npm/cache-keep")))
-        #expect(present(home.appendingPathComponent(".Trash")))
-        #expect(report.removed == 2)
+        #expect(present(home.appendingPathComponent(".npm")))
+        #expect(report.removed == [home.appendingPathComponent(".npm/_npx").path])
+        #expect(report.trash == "emptied")
+    }
+
+    @Test func reportsFreedSpaceAsPositive() throws {
+        let home = try tempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cache = home.appendingPathComponent("Library/Caches/bulky")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data(count: 128 << 20).write(to: cache.appendingPathComponent("blob"))
+        let report = Clean.execute(environment(home))
+        #expect(report.removed.count == 1)
+        #expect(report.freed > 64 << 20)
+    }
+
+    @Test func recordsTrashFailureInsteadOfClaimingIt() throws {
+        let home = try tempHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let report = Clean.execute(environment(home, emptyTrash: { "Trash: could not run Finder" }))
+        #expect(report.failed == ["Trash: could not run Finder"])
+        #expect(report.trash.isEmpty)
+    }
+
+    @Test func recordsUnreadableDirectoryInsteadOfSilence() throws {
+        let home = try tempHome()
+        let users = home.appendingPathComponent("Library/Application Support/LarkShell/aha/users")
+        try fill(users.appendingPathComponent("u1/profile_explorer/Service Worker/CacheStorage/abc"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: users.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: users.path)
+            try? FileManager.default.removeItem(at: home)
+        }
+        let report = Clean.execute(environment(home))
+        #expect(report.failed.contains { $0.hasPrefix(users.path + ":") })
+        #expect(present(users))
+        #expect(report.removed.isEmpty)
     }
 
     private func claudeHome(_ versions: [String], pinned: String?, running: [String] = []) throws -> (URL, CleanEnvironment) {
@@ -768,7 +807,7 @@ private func present(_ url: URL) -> Bool {
                                                        withDestinationURL: root.appendingPathComponent(pinned))
         }
         let executables = running.map { root.appendingPathComponent($0).path }
-        return (home, CleanEnvironment(home: home, runningExecutables: executables))
+        return (home, environment(home, executables: executables))
     }
 
     @Test func keepsPinnedAndTwoNewestClaudeVersions() throws {
@@ -781,7 +820,7 @@ private func present(_ url: URL) -> Bool {
         #expect(!present(root.appendingPathComponent("2.1.290")))
         #expect(!present(root.appendingPathComponent("2.1.100")))
         #expect(present(root.appendingPathComponent(".tmp-2.1.100-999-1788244921820")))
-        #expect(report.removed == 2)
+        #expect(report.removed.count == 2)
     }
 
     @Test func keepsTheRunningClaudeVersion() throws {
@@ -791,7 +830,7 @@ private func present(_ url: URL) -> Bool {
         let report = Clean.execute(environment)
         #expect(!present(root.appendingPathComponent("2.1.290")))
         #expect(present(root.appendingPathComponent("2.1.200")))
-        #expect(report.removed == 1)
+        #expect(report.removed.count == 1)
     }
 
     @Test func skipsClaudeVersionsWhenLauncherIsMissing() throws {
@@ -801,7 +840,7 @@ private func present(_ url: URL) -> Bool {
         let report = Clean.execute(environment)
         #expect(present(root.appendingPathComponent("2.1.290")))
         #expect(present(root.appendingPathComponent("2.1.296")))
-        #expect(report.removed == 0)
+        #expect(report.removed.isEmpty)
         #expect(report.skipped.contains("Claude Code versions (launcher unresolved)"))
     }
 
@@ -820,24 +859,24 @@ private func present(_ url: URL) -> Bool {
         let home = try larkHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let base = home.appendingPathComponent("Library/Application Support")
-        let report = Clean.execute(CleanEnvironment(home: home))
+        let report = Clean.execute(environment(home))
         #expect(!present(base.appendingPathComponent("LarkShell/aha/users/u1/profile_explorer/Service Worker/CacheStorage")))
         #expect(!present(base.appendingPathComponent("LarkShell/iron/users/u1/profile_main/Service Worker/CacheStorage")))
         #expect(!present(base.appendingPathComponent("LarkInternational/aha/users/u2/profile_explorer/Service Worker/CacheStorage")))
         #expect(!present(base.appendingPathComponent("LarkInternational/update")))
         #expect(present(base.appendingPathComponent("LarkShell/aha/users/u1/profile_explorer/IndexedDB/store")))
         #expect(present(base.appendingPathComponent("LarkShell/aha/users/u1/profile_explorer")))
-        #expect(report.removed == 4)
+        #expect(report.removed.count == 4)
     }
 
     @Test func keepsLarkDataWhileTheAppRuns() throws {
         let home = try larkHome()
         defer { try? FileManager.default.removeItem(at: home) }
         let base = home.appendingPathComponent("Library/Application Support")
-        let report = Clean.execute(CleanEnvironment(home: home, runningBundles: ["com.electron.lark"]))
+        let report = Clean.execute(environment(home, bundles: ["com.electron.lark"]))
         #expect(present(base.appendingPathComponent("LarkShell/aha/users/u1/profile_explorer/Service Worker/CacheStorage/abc")))
         #expect(present(base.appendingPathComponent("LarkInternational/update")))
-        #expect(report.removed == 0)
+        #expect(report.removed.isEmpty)
         #expect(report.skipped.contains("LarkShell (running)"))
         #expect(report.skipped.contains("LarkInternational (running)"))
     }

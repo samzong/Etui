@@ -7,19 +7,22 @@ struct CleanEnvironment {
     var runningBundles: Set<String> = []
     var runningExecutables: [String] = []
     var docker = false
+    var emptyTrash: @Sendable () -> String? = Clean.emptyTrash
 }
 
 struct CleanReport {
     var freed: Int64 = 0
-    var removed = 0
+    var removed: [String] = []
     var skipped: [String] = []
     var failed: [String] = []
     var docker = ""
+    var trash = ""
 
     var logged: [String: Any] {
         [
-            "at": Store.now(), "freed": freed, "removed": removed,
-            "skipped": skipped, "failed": failed, "docker": docker,
+            "at": Store.now(), "freed": freed, "removed_total": removed.count,
+            "removed": removed.prefix(500).map { $0 },
+            "skipped": skipped, "failed": failed, "docker": docker, "trash": trash,
         ]
     }
 }
@@ -54,18 +57,29 @@ enum Clean {
         sweepCaches(env, &report)
         sweepNpx(env, &report)
         sweepAppData(env, &report)
-        sweepTrash(env, &report)
+        if let failure = env.emptyTrash() {
+            report.failed.append(failure)
+        } else {
+            report.trash = "emptied"
+        }
         sweepClaudeVersions(env, &report)
         if env.docker {
             sweepDocker(&report)
         }
-        report.freed = before - freeBytes()
+        report.freed = freeBytes() - before
         return report
+    }
+
+    @Sendable static func emptyTrash() -> String? {
+        guard let result = command("/usr/bin/osascript", ["-e", "tell application \"Finder\" to empty trash"]) else {
+            return "Trash: could not run Finder"
+        }
+        return result.status == 0 ? nil : "Trash: \(flat(result.output))"
     }
 
     private static func sweepCaches(_ env: CleanEnvironment, _ report: inout CleanReport) {
         let root = env.home.appendingPathComponent("Library/Caches")
-        for target in children(of: root) {
+        for target in children(of: root, &report) {
             let name = target.lastPathComponent
             if cacheExclusions.contains(name) {
                 report.skipped.append("Caches/\(name)")
@@ -91,8 +105,8 @@ enum Clean {
                 continue
             }
             for tree in ["aha", "iron"] {
-                for user in children(of: base.appendingPathComponent("\(tree)/users")) {
-                    for profile in children(of: user) where profile.lastPathComponent.hasPrefix("profile_") {
+                for user in children(of: base.appendingPathComponent("\(tree)/users"), &report) {
+                    for profile in children(of: user, &report) where profile.lastPathComponent.hasPrefix("profile_") {
                         let cache = profile.appendingPathComponent("Service Worker/CacheStorage")
                         guard isDirectory(cache) else { continue }
                         remove(cache, under: base, &report)
@@ -106,13 +120,6 @@ enum Clean {
         }
     }
 
-    private static func sweepTrash(_ env: CleanEnvironment, _ report: inout CleanReport) {
-        let root = env.home.appendingPathComponent(".Trash")
-        for target in children(of: root) {
-            remove(target, under: root, &report)
-        }
-    }
-
     private static func sweepClaudeVersions(_ env: CleanEnvironment, _ report: inout CleanReport) {
         let root = env.home.appendingPathComponent(".local/share/claude")
         let versions = root.appendingPathComponent("versions")
@@ -123,7 +130,7 @@ enum Clean {
             return
         }
         let resolved = versions.resolvingSymlinksInPath().standardizedFileURL.path
-        let installed = children(of: versions)
+        let installed = children(of: versions, &report)
             .map(\.lastPathComponent)
             .filter(isVersion)
             .sorted { versionKey($0).lexicographicallyPrecedes(versionKey($1)) }
@@ -180,7 +187,7 @@ enum Clean {
         }
         do {
             try FileManager.default.removeItem(at: target)
-            report.removed += 1
+            report.removed.append(target.path)
         } catch {
             report.failed.append("\(name): \(error.localizedDescription)")
         }
@@ -208,8 +215,16 @@ enum Clean {
         name.split(separator: ".").map { Int($0) ?? 0 } + [0, 0, 0]
     }
 
-    private static func children(of root: URL) -> [URL] {
-        (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+    private static func children(of root: URL, _ report: inout CleanReport) -> [URL] {
+        do {
+            return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        } catch {
+            let missing = [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains((error as NSError).code)
+            if !missing {
+                report.failed.append("\(root.path): \(error.localizedDescription)")
+            }
+            return []
+        }
     }
 
     private static func isDirectory(_ url: URL) -> Bool {
@@ -244,7 +259,7 @@ enum Clean {
     }
 
     @discardableResult
-    private static func command(_ tool: String, _ arguments: [String], timeout: TimeInterval = 120) -> (status: Int32, output: String)? {
+    static func command(_ tool: String, _ arguments: [String], timeout: TimeInterval = 120) -> (status: Int32, output: String)? {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: tool)
@@ -256,16 +271,24 @@ enum Clean {
         } catch {
             return nil
         }
+        let handle = pipe.fileHandleForReading
+        var buffer = Data()
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.2)
+            var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            if poll(&descriptor, 1, 50) > 0 {
+                let chunk = (try? handle.read(upToCount: 65536)) ?? nil
+                if let chunk, !chunk.isEmpty {
+                    buffer.append(chunk)
+                }
+            }
         }
         if process.isRunning {
             process.terminate()
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        buffer.append((try? handle.readToEnd()) ?? Data())
         process.waitUntilExit()
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        return (process.terminationStatus, String(decoding: buffer, as: UTF8.self))
     }
 }
 
