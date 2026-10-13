@@ -55,7 +55,6 @@ enum Clean {
         sweepCaches(env, &report)
         sweepNpx(env, &report)
         sweepAppData(env, &report)
-        sweepTrash(env, &report)
         sweepClaudeVersions(env, &report)
         if env.docker {
             sweepDocker(&report)
@@ -104,13 +103,6 @@ enum Clean {
             if isDirectory(update) {
                 remove(update, under: base, &report)
             }
-        }
-    }
-
-    private static func sweepTrash(_ env: CleanEnvironment, _ report: inout CleanReport) {
-        let root = env.home.appendingPathComponent(".Trash")
-        for target in children(of: root, &report) {
-            remove(target, under: root, &report)
         }
     }
 

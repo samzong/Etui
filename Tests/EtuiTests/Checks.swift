@@ -744,20 +744,18 @@ private func present(_ url: URL) -> Bool {
         #expect(report.skipped.contains { $0.hasPrefix("trap ") })
     }
 
-    @Test func emptiesTrashAndNpxCache() throws {
+    @Test func emptiesNpxCacheAndLeavesTheTrash() throws {
         let home = try tempHome()
         defer { try? FileManager.default.removeItem(at: home) }
         try fill(home.appendingPathComponent(".Trash/old-report"))
         try fill(home.appendingPathComponent(".npm/_npx/abc123"))
         try fill(home.appendingPathComponent(".npm/cache-keep"))
         let report = Clean.execute(environment(home))
-        #expect(!present(home.appendingPathComponent(".Trash/old-report")))
         #expect(!present(home.appendingPathComponent(".npm/_npx")))
         #expect(present(home.appendingPathComponent(".npm/cache-keep")))
-        #expect(present(home.appendingPathComponent(".Trash")))
         #expect(present(home.appendingPathComponent(".npm")))
-        #expect(report.removed.count == 2)
-        #expect(report.removed.contains { $0.hasSuffix(".Trash/old-report") })
+        #expect(present(home.appendingPathComponent(".Trash/old-report")))
+        #expect(report.removed.count == 1)
         #expect(report.removed.contains { $0.hasSuffix(".npm/_npx") })
     }
 
@@ -770,20 +768,6 @@ private func present(_ url: URL) -> Bool {
         let report = Clean.execute(environment(home))
         #expect(report.removed.count == 1)
         #expect(report.freed > 64 << 20)
-    }
-
-    @Test func recordsUnreadableTrashInsteadOfSilence() throws {
-        let home = try tempHome()
-        let trash = home.appendingPathComponent(".Trash")
-        try fill(trash.appendingPathComponent("old-report"))
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: trash.path)
-        defer {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: trash.path)
-            try? FileManager.default.removeItem(at: home)
-        }
-        let report = Clean.execute(environment(home))
-        #expect(report.failed.contains { $0.hasPrefix(trash.path + ":") })
-        #expect(report.removed.isEmpty)
     }
 
     @Test func recordsUnreadableDirectoryInsteadOfSilence() throws {
