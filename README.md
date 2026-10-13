@@ -21,6 +21,8 @@ Search `awake` to toggle Keep Awake, which starts enabled and prevents idle disp
 
 To turn it off without Etui, including after uninstalling, run `sudo pmset -a disablesleep 0` in Terminal. This restores system sleep; idle display and system sleep may still be prevented by Keep Awake or other apps.
 
+Search `clean mac` to reclaim space in one step, with no preview: it runs on Return and ends with a one-line summary of what it freed and what it could not remove. It reclaims app caches under `~/Library/Caches`, the npm `npx` cache, Lark `Service Worker/CacheStorage` leftovers, old Claude Code versions, and bounded Docker pruning on the `colima` builder. Caches it cannot vouch for (Go build cache, Playwright browsers, sccache, Apple compiled-model caches, proxy and VPN state) are never touched, and any candidate that resolves outside its own root is skipped. Each run appends one line to `~/Library/Application Support/Etui/clean.jsonl`, including the paths it removed and any failure.
+
 When a running app has multiple windows, on every Space, they are searchable by title and listed below the app's row; selecting one switches to that window. Open Google Chrome tabs are searchable by title and site and listed below Chrome's row in place of its windows; selecting one switches to that tab, and macOS asks once for permission to control Chrome. Combe tabs are listed the same way in place of its windows. Window discovery uses private macOS APIs and may need updates after macOS changes.
 
 The clipboard panel keeps text and images for 48 hours, skips concealed clips, and pastes with Return or ⌘1–⌘9.

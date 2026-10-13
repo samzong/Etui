@@ -8,6 +8,7 @@ enum Kind: Equatable {
     case quit
     case awake(Bool)
     case closedLid(ClosedLidState)
+    case clean
 }
 
 struct Entry {
@@ -34,6 +35,10 @@ struct Entry {
         }
         return Entry(id: "internal.closed-lid", name: name,
                      aliases: ["lid", "clamshell", "closed", "sleep"], path: "", kind: .closedLid(state))
+    }
+
+    static func clean() -> Entry {
+        Entry(id: "internal.clean", name: "Clean Disk", aliases: ["clean mac"], path: "", kind: .clean)
     }
 }
 
