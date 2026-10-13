@@ -38,15 +38,39 @@ enum Clean {
     private static let dataVolume = "/System/Volumes/Data"
 
     @MainActor static func run() {
-        let bundles = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-        Task.detached(priority: .utility) {
-            let report = execute(CleanEnvironment(
-                home: URL(fileURLWithPath: NSHomeDirectory()),
-                runningBundles: bundles,
-                runningExecutables: Processes.paths(),
-                docker: true))
+        let environment = CleanEnvironment(
+            home: URL(fileURLWithPath: NSHomeDirectory()),
+            runningBundles: Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)),
+            runningExecutables: Processes.paths(),
+            docker: true)
+        Task {
+            let report = await Task.detached(priority: .utility) { execute(environment) }.value
             record(report)
+            announce(report)
         }
+    }
+
+    @MainActor private static func announce(_ report: CleanReport) {
+        let summary = summary(for: report)
+        let alert = NSAlert()
+        alert.messageText = summary.title
+        alert.informativeText = summary.detail
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
+    static func summary(for report: CleanReport) -> (title: String, detail: String) {
+        let title = switch (report.freed > 0, report.removed.isEmpty) {
+        case (true, _): "Freed \(ByteCountFormatter.string(fromByteCount: report.freed, countStyle: .file))"
+        case (false, true): "Nothing to Clean"
+        case (false, false): "Cleaned \(report.removed.count) items"
+        }
+        let detail = switch report.failed.count {
+        case 0: ""
+        case 1: "One item could not be removed. Its path is in clean.jsonl."
+        case let count: "\(count) items could not be removed. Their paths are in clean.jsonl."
+        }
+        return (title, detail)
     }
 
     static func execute(_ env: CleanEnvironment) -> CleanReport {

@@ -708,6 +708,27 @@ private func present(_ url: URL) -> Bool {
         #expect(Rank.query("clean", apps: entries, history: history, now: 0).map(\.id) == ["internal.clean"])
     }
 
+    @Test func summaryDescribesTheRun() {
+        #expect(Clean.summary(for: CleanReport()).title == "Nothing to Clean")
+        #expect(Clean.summary(for: CleanReport()).detail.isEmpty)
+
+        var report = CleanReport()
+        report.freed = 1_500_000_000
+        report.removed = ["/tmp/a"]
+        #expect(Clean.summary(for: report).title.hasPrefix("Freed "))
+        #expect(Clean.summary(for: report).detail.isEmpty)
+
+        report.failed = ["a: could not be removed"]
+        #expect(Clean.summary(for: report).detail.contains("One item could not be removed"))
+
+        var counted = CleanReport()
+        counted.removed = ["/tmp/a", "/tmp/b"]
+        #expect(Clean.summary(for: counted).title == "Cleaned 2 items")
+
+        counted.failed = ["a", "b"]
+        #expect(Clean.summary(for: counted).detail.contains("2 items could not be removed"))
+    }
+
     @Test func sweepsCachesButKeepsExclusions() throws {
         let home = try tempHome()
         defer { try? FileManager.default.removeItem(at: home) }
