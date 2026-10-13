@@ -271,27 +271,43 @@ enum Clean {
         } catch {
             return nil
         }
-        let handle = pipe?.fileHandleForReading
+        let descriptor = pipe?.fileHandleForReading.fileDescriptor
+        if let descriptor {
+            _ = fcntl(descriptor, F_SETFL, O_NONBLOCK)
+        }
         var buffer = Data()
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
-            if let handle {
-                var descriptor = pollfd(fd: handle.fileDescriptor, events: Int16(POLLIN), revents: 0)
-                if poll(&descriptor, 1, 50) > 0, let chunk = (try? handle.read(upToCount: 65536)) ?? nil, !chunk.isEmpty {
-                    buffer.append(chunk)
-                    continue
-                }
+            if let descriptor, readable(descriptor), drain(descriptor, into: &buffer) {
+                continue
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
         if process.isRunning {
             process.terminate()
         }
-        if let handle {
-            buffer.append((try? handle.readToEnd()) ?? Data())
+        if let descriptor {
+            var rounds = 0
+            while rounds < 20, drain(descriptor, into: &buffer) {
+                rounds += 1
+                Thread.sleep(forTimeInterval: 0.01)
+            }
         }
         process.waitUntilExit()
         return (process.terminationStatus, String(decoding: buffer, as: UTF8.self))
+    }
+
+    private static func readable(_ descriptor: Int32) -> Bool {
+        var entry = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+        return poll(&entry, 1, 50) > 0
+    }
+
+    private static func drain(_ descriptor: Int32, into buffer: inout Data) -> Bool {
+        var bytes = [UInt8](repeating: 0, count: 65536)
+        let count = Darwin.read(descriptor, &bytes, bytes.count)
+        guard count > 0 else { return false }
+        buffer.append(contentsOf: bytes[0..<count])
+        return true
     }
 }
 
