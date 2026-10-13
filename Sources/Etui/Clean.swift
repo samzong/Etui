@@ -59,7 +59,11 @@ enum Clean {
         if env.docker {
             sweepDocker(&report)
         }
-        report.freed = freeBytes() - before
+        if let before, let after = freeBytes() {
+            report.freed = after - before
+        } else {
+            report.failed.append("free space could not be measured")
+        }
         return report
     }
 
@@ -231,26 +235,36 @@ enum Clean {
         text.split(whereSeparator: \.isNewline).joined(separator: " | ")
     }
 
-    private static func freeBytes() -> Int64 {
+    private static func freeBytes() -> Int64? {
         var stats = statfs()
         let path = FileManager.default.fileExists(atPath: dataVolume) ? dataVolume : "/"
-        guard statfs(path, &stats) == 0 else { return 0 }
+        guard statfs(path, &stats) == 0 else { return nil }
         return Int64(stats.f_bavail) * Int64(stats.f_bsize)
     }
 
     private static func record(_ report: CleanReport) {
-        guard let data = try? JSONSerialization.data(withJSONObject: report.logged),
-              var line = String(data: data, encoding: .utf8)
-        else { return }
-        line += "\n"
-        let url = Store.dataDir().appendingPathComponent("clean.jsonl")
-        try? FileManager.default.createDirectory(at: Store.dataDir(), withIntermediateDirectories: true)
+        guard let data = try? JSONSerialization.data(withJSONObject: report.logged) else {
+            fputs("Etui: could not encode the clean run\n", stderr)
+            return
+        }
+        let payload = Data((String(decoding: data, as: UTF8.self) + "\n").utf8)
+        let dir = Store.dataDir()
+        let url = dir.appendingPathComponent("clean.jsonl")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let handle = try? FileHandle(forWritingTo: url) {
             defer { try? handle.close() }
             _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: Data(line.utf8))
-        } else {
-            try? Data(line.utf8).write(to: url)
+            do {
+                try handle.write(contentsOf: payload)
+                return
+            } catch {
+                fputs("Etui: could not append clean.jsonl: \(error.localizedDescription)\n", stderr)
+            }
+        }
+        do {
+            try payload.write(to: url)
+        } catch {
+            fputs("Etui: could not write clean.jsonl: \(error.localizedDescription)\n", stderr)
         }
     }
 
@@ -285,6 +299,12 @@ enum Clean {
         }
         if process.isRunning {
             process.terminate()
+            for _ in 0..<10 where process.isRunning {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
         }
         if let descriptor {
             var rounds = 0
