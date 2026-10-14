@@ -30,7 +30,7 @@ final class Candidates {
         for (index, candidate) in candidates.enumerated() {
             let color: NSColor = index == highlighted ? .controlAccentColor : .labelColor
             line.append(NSAttributedString(string: index == 0 ? "" : "   "))
-            line.append(NSAttributedString(string: "\(index + 1) ", attributes: [.font: small, .foregroundColor: NSColor.tertiaryLabelColor]))
+            line.append(NSAttributedString(string: "\(index + 1) ", attributes: [.font: small, .foregroundColor: NSColor.labelColor]))
             line.append(NSAttributedString(string: candidate.text, attributes: [.font: font, .foregroundColor: color]))
             if !candidate.comment.isEmpty {
                 line.append(NSAttributedString(string: " " + candidate.comment, attributes: [.font: small, .foregroundColor: NSColor.secondaryLabelColor]))
