@@ -20,6 +20,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     private var handler: EventHandlerRef?
     private var awake: NSObjectProtocol?
     private let closedLid = ClosedLid()
+    private let externalDisplay = ExternalDisplay()
 
     private static let shortcuts: [(key: Int, modifiers: Int, label: String, run: @MainActor (Launcher) -> Void)] = [
         (kVK_Space, cmdKey, "Command+Space", { $0.toggle() }),
@@ -53,6 +54,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
         installMenu()
         registerShortcuts()
         clipboard.start()
+        externalDisplay.start()
         awake = Launcher.keepAwake()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
             self?.handle(event) == false ? nil : event
@@ -109,6 +111,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     }
 
     func applicationWillTerminate(_: Notification) {
+        externalDisplay.stop()
         hotkeys.forEach { UnregisterEventHotKey($0) }
         if let handler {
             RemoveEventHandler(handler)
@@ -133,7 +136,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     private func present() {
         let hidden = Store.hidden()
         catalog = Catalog.applyDisplayNames(Catalog.scan().filter { $0.kind == .quit || !hidden.contains($0.id as NSString) })
-            + [.awake(awake != nil), .closedLid(closedLid.state), .clean()]
+            + [.awake(awake != nil), .closedLid(closedLid.state), .externalDisplay(externalDisplay.enabled), .clean()]
         content.clear()
         shown = true
         refresh()
@@ -265,6 +268,16 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
             }
         case .closedLid:
             toggleClosedLid()
+        case .externalDisplay:
+            do {
+                try externalDisplay.set(!externalDisplay.enabled)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "Could Not Change Built-in Display"
+                alert.informativeText = "Etui could not apply the display configuration."
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
         case .clean:
             Clean.run()
         case .target:

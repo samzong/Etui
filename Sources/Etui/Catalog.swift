@@ -8,6 +8,7 @@ enum Kind: Equatable {
     case quit
     case awake(Bool)
     case closedLid(ClosedLidState)
+    case externalDisplay(Bool)
     case clean
 }
 
@@ -35,6 +36,11 @@ struct Entry {
         }
         return Entry(id: "internal.closed-lid", name: name,
                      aliases: ["lid", "clamshell", "closed", "sleep"], path: "", kind: .closedLid(state))
+    }
+
+    static func externalDisplay(_ on: Bool) -> Entry {
+        Entry(id: "internal.external-display", name: on ? "Keep Built-in Display On" : "Turn Off Built-in Display with External Monitor",
+              aliases: ["display", "monitor", "screen", "external", "builtin", "内屏", "外接屏"], path: "", kind: .externalDisplay(on))
     }
 
     static func clean() -> Entry {
