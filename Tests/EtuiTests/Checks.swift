@@ -84,6 +84,231 @@ private actor SleepBackend {
         _ = try await SleepSettings.read()
     }
 
+    @Test func externalDisplayPolicyClosesBuiltinOnlyForEligibleDisplay() {
+        let builtin = DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        let external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        let cases: [(String, Bool, [DisplayState], Bool?)] = [
+            ("eligible external display", true, [builtin, external], false),
+            ("sleeping external display", true, [builtin, DisplayState(id: 2, builtin: false, active: false, online: true, mirrored: false, physical: true, asleep: true)], false),
+            ("inactive builtin stays disabled with external", true, [DisplayState(id: 1, builtin: true, active: false, online: false, mirrored: false, physical: true), external], false),
+            ("inactive builtin restores without external", true, [DisplayState(id: 1, builtin: true, active: false, online: false, mirrored: false, physical: true)], true),
+            ("policy disabled", false, [builtin, external], true),
+            ("no external display", true, [builtin], true),
+            ("virtual display", true, [builtin, DisplayState(id: 3, builtin: false, active: true, online: true, mirrored: false, physical: false)], true),
+            ("offline external display", true, [builtin, DisplayState(id: 4, builtin: false, active: true, online: false, mirrored: false, physical: true)], true),
+            ("inactive external display", true, [builtin, DisplayState(id: 5, builtin: false, active: false, online: true, mirrored: false, physical: true)], true),
+            ("mirrored external display", true, [builtin, DisplayState(id: 6, builtin: false, active: true, online: true, mirrored: true, physical: true)], true),
+            ("mirrored builtin", true, [DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: true, physical: true), external], true),
+        ]
+
+        for (name, enabled, displays, expected) in cases {
+            #expect(DisplayPolicy.desired(enabled: enabled, lidClosed: false, displays: displays) == expected, "\(name)")
+        }
+    }
+
+    @Test func externalDisplayPolicyDefersWhenLidOrBuiltinIsUnknown() {
+        let builtin = DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        let external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        let cases: [(String, Bool?, [DisplayState])] = [
+            ("closed lid", true, [builtin, external]),
+            ("unknown lid state", nil, [builtin, external]),
+            ("builtin display missing", false, [external]),
+        ]
+
+        for (name, lidClosed, displays) in cases {
+            #expect(DisplayPolicy.desired(enabled: true, lidClosed: lidClosed, displays: displays) == nil, "\(name)")
+        }
+    }
+
+    @Test func missingBuiltinRestoresOnlyWhenItsIdentityWasPreviouslyKnown() {
+        let fallback = DisplayState(id: 7, builtin: false, active: true, online: true, mirrored: false, physical: false)
+        let external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        let cases: [([DisplayState], Bool)] = [([], false), ([fallback], false), ([external], true)]
+        for (displays, externalPresent) in cases {
+            for enabled in [false, true] {
+                for lidClosed: Bool? in [false, true, nil] {
+                    #expect(DisplayPolicy.desired(enabled: enabled, lidClosed: lidClosed, displays: displays, builtinKnown: true) == (lidClosed == false && !externalPresent ? true : nil))
+                    #expect(DisplayPolicy.desired(enabled: enabled, lidClosed: lidClosed, displays: displays, builtinKnown: false) == nil)
+                }
+            }
+        }
+    }
+
+    @Test func builtinRestoreConfiguresOnlyIDsNotAlreadyInTargetState() throws {
+        let builtin = DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        let second = DisplayState(id: 8, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        for before in [[], [builtin], [builtin, second]] {
+            var calls: [CGDirectDisplayID] = []
+            try DisplayConfiguration.apply([1, 8], on: true, before: before, configure: { id, enabled in
+                #expect(enabled)
+                calls.append(id)
+                if id == 1 { throw DisplaySystem.Failure.configure("enable", 1001) }
+            }, read: { [builtin, second] })
+            #expect(calls == [1, 8].filter { id in !before.contains { $0.id == id } })
+        }
+    }
+
+    @Test func builtinRestoreRequiresListedActiveAndOnlineID() {
+        let fallback = DisplayState(id: 7, builtin: false, active: true, online: true, mirrored: false, physical: false)
+        let builtin = DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        var offline = builtin
+        offline.online = false
+        var inactive = builtin
+        inactive.active = false
+        for after in [[], [fallback], [offline], [inactive]] {
+            var called = false
+            #expect(throws: DisplaySystem.Failure.self) {
+                try DisplayConfiguration.apply([1], on: true, before: [], configure: { id, enabled in
+                    #expect(id == 1 && enabled)
+                    called = true
+                }, read: { after })
+            }
+            #expect(called)
+        }
+        #expect(DisplayConfiguration.verified([1], on: true, displays: [builtin]))
+        #expect(DisplayConfiguration.verified([1, 8], on: true, displays: [builtin]))
+        offline.id = 8
+        inactive.id = 8
+        #expect(!DisplayConfiguration.verified([1, 8], on: true, displays: [builtin, offline]))
+        #expect(!DisplayConfiguration.verified([1, 8], on: true, displays: [builtin, inactive]))
+        #expect(!DisplayConfiguration.verified([8], on: true, displays: [builtin]))
+        #expect(!DisplayConfiguration.verified([], on: true, displays: [builtin]))
+    }
+
+    @Test func builtinRestoreRetryBacksOffThenContinuesEveryFourSeconds() {
+        var retry = DisplayRestoreRetry()
+        for instant in [0.0, 0.25, 0.75, 1.75, 3.75, 7.75, 11.75, 15.75, 19.75] {
+            let early = retry.takeAttempt(at: instant - 0.01)
+            #expect(!early)
+            let due = retry.takeAttempt(at: instant)
+            #expect(due)
+        }
+        #expect(retry.attempts == 9)
+        let delayed = retry.takeAttempt(at: 1000)
+        #expect(delayed)
+        let repeated = retry.takeAttempt(at: 1000)
+        #expect(!repeated)
+        let early = retry.takeAttempt(at: 1003.99)
+        #expect(!early)
+        let due = retry.takeAttempt(at: 1004)
+        #expect(due)
+    }
+
+    @Test func transientDisplayListCannotPolluteBuiltinCacheOrDecide() {
+        let builtin = DisplayState(id: 1, builtin: true, active: true, online: true, mirrored: false, physical: true)
+        let external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        let transient = [2, 1, 3].map {
+            DisplayState(id: CGDirectDisplayID($0), builtin: true, active: true, online: true, mirrored: true, physical: false, asleep: true)
+        }
+        var main = DisplayBuiltinCache(ids: [], learns: true)
+        main.observe([builtin, external])
+        var guardian = DisplayBuiltinCache(ids: [1], learns: false)
+        for snapshot in [transient, [DisplayState(id: 8, builtin: true, active: true, online: true, mirrored: true, physical: true)],
+                         [DisplayState(id: 9, builtin: true, active: true, online: true, mirrored: false, physical: false)]] {
+            main.observe(snapshot)
+            guardian.observe(snapshot)
+            #expect(main.ids == [1])
+            #expect(guardian.ids == [1])
+        }
+        guardian.observe([DisplayState(id: 10, builtin: true, active: true, online: true, mirrored: false, physical: true)])
+        #expect(guardian.ids == [1])
+        var physicalTransient = transient
+        for index in physicalTransient.indices { physicalTransient[index].physical = true }
+        for snapshot in [transient, physicalTransient] {
+            for enabled in [false, true] {
+                #expect(DisplayPolicy.desired(enabled: enabled, lidClosed: false, displays: snapshot, builtinKnown: true) == nil)
+            }
+            #expect(!DisplayConfiguration.verified([1], on: true, displays: snapshot))
+        }
+        var recovery = DisplayRecovery()
+        recovery.observe([builtin, external], lidClosed: false)
+        recovery.failed = true
+        recovery.observe(transient, lidClosed: false)
+        #expect(recovery.failed)
+        recovery.observe([builtin, external], lidClosed: false)
+        #expect(recovery.failed)
+    }
+
+    @Test func quitStopsGuardianOnlyAfterOpenLidRestoreIsVerified() {
+        for lidClosed: Bool? in [false, true, nil] {
+            #expect(!DisplayPolicy.canStopGuardian(lidClosed: lidClosed, restoreVerified: false))
+            #expect(DisplayPolicy.canStopGuardian(lidClosed: lidClosed, restoreVerified: true) == (lidClosed == false))
+        }
+    }
+
+    @Test func guardianReevaluatesRestorationWhileParentIsAlive() {
+        let builtin = DisplayState(id: 1, builtin: true, active: false, online: false, mirrored: false, physical: true)
+        let external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        let fallback = DisplayState(id: 7, builtin: false, active: true, online: true, mirrored: false, physical: false)
+        for parentGone in [false, true] {
+            for snapshot: [DisplayState]? in [nil, [fallback], [builtin], [builtin, external], [external]] {
+                let expected = parentGone || snapshot == nil || snapshot == [fallback] || snapshot == [builtin]
+                #expect(DisplayPolicy.guardianShouldRestore(parentGone: parentGone, lidClosed: false, displays: snapshot, builtinKnown: true) == expected)
+                for lidClosed: Bool? in [true, nil] {
+                    #expect(!DisplayPolicy.guardianShouldRestore(parentGone: parentGone, lidClosed: lidClosed, displays: snapshot, builtinKnown: true))
+                }
+            }
+        }
+        #expect(DisplayPolicy.guardianShouldRestore(parentGone: false, lidClosed: false, displays: [fallback], builtinKnown: true))
+        #expect(!DisplayPolicy.guardianShouldRestore(parentGone: false, lidClosed: false, displays: [builtin, external], builtinKnown: true))
+        #expect(DisplayPolicy.guardianShouldRestore(parentGone: true, lidClosed: false, displays: [builtin, external], builtinKnown: true))
+    }
+
+    @Test func builtinCacheReplacesStaleIDsOnlyWithSaneIdentities() {
+        let builtin = DisplayState(id: 1, builtin: true, active: false, online: false, mirrored: false, physical: true)
+        var main = DisplayBuiltinCache(ids: [1, 8], learns: true)
+        let guardian = DisplayBuiltinCache(ids: [1, 8], learns: false)
+        main.observe([])
+        #expect(main.ids == [1, 8])
+        main.observe([DisplayState(id: 7, builtin: false, active: true, online: true, mirrored: false, physical: false)])
+        #expect(main.ids == [1, 8])
+        main.observe([builtin])
+        #expect(main.ids == [1])
+        #expect(guardian.ids == [1, 8])
+        var replacement = builtin
+        replacement.id = 10
+        main.observe([replacement])
+        #expect(main.ids == [10])
+    }
+
+    @Test func guardianExplicitStopDoesNotBecomeParentDeath() {
+        var control = DisplayGuardianInput.watching
+        control.consume(Data([0]))
+        #expect(control == .watching)
+        control.consume(Data())
+        #expect(control == .parentGone)
+        control.consume(Data([DisplayGuardianInput.stopByte]))
+        #expect(control == .stop)
+        control.consume(Data())
+        #expect(control == .stop)
+        var intentional = DisplayGuardianInput.watching
+        intentional.consume(Data([DisplayGuardianInput.stopByte]))
+        intentional.consume(Data())
+        #expect(intentional == .stop)
+    }
+
+    @Test func externalDisplayRecoveryRetriesOnlyWhenContextChanges() {
+        var builtin = DisplayState(id: 1, builtin: true, active: false, online: false, mirrored: false, physical: true)
+        var external = DisplayState(id: 2, builtin: false, active: true, online: true, mirrored: false, physical: true)
+        var recovery = DisplayRecovery()
+        recovery.observe([builtin, external], lidClosed: false)
+        recovery.failed = true
+        builtin.active = true
+        builtin.online = true
+        recovery.observe([external, builtin], lidClosed: false)
+        #expect(recovery.failed)
+        external.online = false
+        recovery.observe([builtin, external], lidClosed: false)
+        #expect(!recovery.failed)
+        recovery.failed = true
+        recovery.observe([builtin, external], lidClosed: false)
+        #expect(recovery.failed)
+        recovery.observe([builtin, external], lidClosed: true)
+        recovery.failed = true
+        recovery.observe([builtin, external], lidClosed: false)
+        #expect(!recovery.failed)
+    }
+
     @Test func searchableWindows() {
         let element = AXUIElementCreateApplication(getpid())
         func window(_ pid: pid_t, _ id: CGWindowID, _ title: String, tabs: [String] = []) -> OpenWindow {

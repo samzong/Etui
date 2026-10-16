@@ -42,8 +42,10 @@ app: build ## Package .local/dist/Etui.app
 	cp Info.plist "$(APP)/Contents/Info.plist"
 	cp Resources/AppIcon.icns "$(APP)/Contents/Resources/AppIcon.icns"
 	cp .build/release/Etui "$(APP)/Contents/MacOS/Etui"
+	cp .build/release/Etui "$(APP)/Contents/MacOS/DisplayGuardian"
 	@identity="$(IDENTITY)"; \
 	echo "Etui: signing as $${identity:-adhoc, accessibility grant resets on every install}"; \
+	codesign --force --sign "$${identity:--}" "$(APP)/Contents/MacOS/DisplayGuardian" && \
 	codesign --force --sign "$${identity:--}" "$(APP)"
 	@printf '$(GREEN)  ✓ %s$(RESET)\n' "$(APP)"
 
