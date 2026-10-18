@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Set release version
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo '::error::Use a release tag in the form vMAJOR.MINOR.PATCH.'
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" Info.plist
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" Info.plist
+          xcrun --sdk macosx --show-sdk-version
+          swift --version
+          test "$(uname -m)" = arm64
+
+      - name: Check
+        run: make check
+
+      - name: Package
+        run: |
+          asset=".local/dist/Etui-${RELEASE_TAG#v}-arm64.dmg"
+          make dmg IDENTITY= DMG="$asset"
+          app=".local/dist/Etui.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "${RELEASE_TAG#v}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "${RELEASE_TAG#v}"
+          for executable in Etui DisplayGuardian; do
+            test "$(lipo -archs "$app/Contents/MacOS/$executable")" = arm64
+          done
+          codesign --verify --deep --strict "$app"
+          shasum -a 256 "$asset"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$RELEASE_TAG" ".local/dist/Etui-${RELEASE_TAG#v}-arm64.dmg" \
+            --verify-tag --title "$RELEASE_TAG" --generate-notes
