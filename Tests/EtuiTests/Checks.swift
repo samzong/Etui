@@ -49,6 +49,76 @@ private actor SleepBackend {
 }
 
 @Suite struct Checks {
+    @Test func calculatorEvaluatesCompleteBinaryExpressions() {
+        let cases: [(String, String)] = [
+            ("2+3*4", "14"),
+            ("(2+3)*4", "20"),
+            ("-3+5", "2"),
+            ("2*-3", "-6"),
+            ("0.1+0.2", "0.3"),
+            ("1/2", "0.5"),
+            ("1.0+0", "1"),
+            ("1.20+0", "1.2"),
+            ("-0+0", "0"),
+            (" 2 +\n 3 ", "5"),
+            ("10-3-2", "5"),
+            ("8/4/2", "1"),
+            ("-((2+3)*4)", "-20"),
+            ("2*(-(3+1))", "-8"),
+        ]
+
+        for (expression, expected) in cases {
+            #expect(Calculator.result(expression) == expected, "\(expression)")
+        }
+    }
+
+    @Test func calculatorPreservesExactIntegerDigits() {
+        let cases: [(String, String)] = [
+            ("1000000000000000+1", "1000000000000001"),
+            ("1000000000000000+2", "1000000000000002"),
+            ("-1000000000000000-1", "-1000000000000001"),
+            ("-1000000000000000-2", "-1000000000000002"),
+            ("9007199254740992-1", "9007199254740991"),
+            ("9007199254740992+0", "9007199254740992"),
+            ("-9007199254740992+0", "-9007199254740992"),
+        ]
+
+        for (expression, expected) in cases {
+            #expect(Calculator.result(expression) == expected, "\(expression)")
+        }
+    }
+
+    @Test func calculatorRejectsIncompleteOrUnsupportedExpressions() {
+        let invalid = [
+            "1/0",
+            "1+",
+            "(1+2",
+            "1..2",
+            "42",
+            "1password",
+            "1e2+1",
+            "１+2",
+            "2(3+4)",
+            "(1+2)3",
+            "-3",
+        ]
+
+        for expression in invalid {
+            #expect(Calculator.result(expression) == nil, "\(expression)")
+        }
+
+        let overflowingLiteral = String(repeating: "9", count: 400) + "+0"
+        #expect(Calculator.result(overflowingLiteral) == nil)
+    }
+
+    @Test func calculatorAcceptsExactly128NestedParentheses() {
+        let accepted = String(repeating: "(", count: 128) + "1+2" + String(repeating: ")", count: 128)
+        let rejected = String(repeating: "(", count: 129) + "1+2" + String(repeating: ")", count: 129)
+
+        #expect(Calculator.result(accepted) == "3")
+        #expect(Calculator.result(rejected) == nil)
+    }
+
     @MainActor @Test func closedLidReadsSystemStateAndCancellation() async throws {
         let backend = SleepBackend()
         let lid = ClosedLid(read: { await backend.read() }, write: { try await backend.write($0) })

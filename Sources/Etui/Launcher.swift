@@ -203,6 +203,9 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
         results = ranked
             .flatMap { $0.kind == .app ? [$0] + switcher.targets(of: $0.id) : [$0] }
             .filter { seen.insert($0.id).inserted }
+        if let calculation = Calculator.entry(content.query) {
+            results.insert(calculation, at: 0)
+        }
         selected = id.flatMap { id in results.firstIndex { $0.id == id } } ?? 0
         visibleStart = max(0, selected - Rank.limit + 1)
         render()
@@ -231,6 +234,12 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
         }
         guard results.indices.contains(selected) else { return }
         let entry = results[selected]
+        if case .calculation(let result) = entry.kind {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(result, forType: .string)
+            dismiss()
+            return
+        }
         if case .closedLid(let state) = entry.kind, state.busy { return }
         if entry.kind == .target {
             Task {
@@ -280,7 +289,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
             }
         case .clean:
             Clean.run()
-        case .target:
+        case .target, .calculation:
             break
         }
     }
