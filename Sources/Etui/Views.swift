@@ -389,6 +389,8 @@ final class PanelContent: NSView {
         }
         let image: NSImage?
         switch entry.kind {
+        case .calculation:
+            image = nil
         case .quit:
             image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         case .awake(let on):

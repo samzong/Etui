@@ -10,6 +10,7 @@ enum Kind: Equatable {
     case closedLid(ClosedLidState)
     case externalDisplay(Bool)
     case clean
+    case calculation(String)
 }
 
 struct Entry {
