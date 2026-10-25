@@ -808,6 +808,67 @@ struct ScreenshotChecks {
         #expect(alpha > 0 && alpha < 0.05)
     }
 
+    @Test @MainActor func screenshotSelectionShowsFrozenPixels() throws {
+        let view = ShotSelection(frame: NSRect(x: 0, y: 0, width: 80, height: 60))
+        view.snapshot = try solid(80, 60) { _, _ in (255, 0, 0) }
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 80, pixelsHigh: 60,
+                                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        view.draw(view.bounds)
+        let dimmed = try #require(bitmap.colorAt(x: 40, y: 30))
+        #expect(dimmed.alphaComponent > 0.9)
+        #expect(dimmed.redComponent > 0.4 && dimmed.redComponent < 0.85)
+        view.mode = .window
+        view.windows = [view.bounds]
+        view.mouseMoved(with: try mouse(.mouseMoved, 40, 30))
+        view.draw(view.bounds)
+        let hole = try #require(bitmap.colorAt(x: 40, y: 30))
+        #expect(hole.redComponent > 0.9 && hole.greenComponent < 0.1 && hole.alphaComponent > 0.9)
+        view.mode = .area
+        view.clear()
+        view.mouseDown(with: try mouse(.leftMouseDown, 20, 20))
+        view.mouseDragged(with: try mouse(.leftMouseDragged, 60, 40))
+        view.mouseUp(with: try mouse(.leftMouseUp, 60, 40))
+        view.draw(view.bounds)
+        let handle = try #require(bitmap.colorAt(x: 20, y: 39))
+        #expect(handle.redComponent > 0.9 && handle.greenComponent > 0.9 && handle.blueComponent > 0.9)
+        let border = try #require(bitmap.colorAt(x: 40, y: 39))
+        #expect(border.blueComponent > border.redComponent || border.blueComponent > 0.85)
+    }
+
+    @Test func frozenFrameCropsBottomLeftRect() throws {
+        let image = try solid(8, 6) { x, y in
+            (x == 2 && y == 4) ? (255, 0, 0) : (0, 0, 255)
+        }
+        let cropped = try #require(ShotFrame(image: image, scale: 2).crop(CGRect(x: 1, y: 0, width: 1, height: 1), screenHeight: 3))
+        #expect(cropped.width == 2 && cropped.height == 2)
+        let bitmap = NSBitmapImageRep(cgImage: cropped)
+        let pixel = try #require(bitmap.colorAt(x: 0, y: 0))
+        #expect(pixel.redComponent > 0.9 && pixel.blueComponent < 0.1)
+        #expect(ShotFrame(image: image, scale: 2).crop(.zero, screenHeight: 3) == nil)
+    }
+
+    private func solid(_ width: Int, _ height: Int, _ fill: (Int, Int) -> (UInt8, UInt8, UInt8)) throws -> CGImage {
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let (red, green, blue) = fill(x, y)
+                let index = (y * width + x) * 4
+                pixels[index] = red
+                pixels[index + 1] = green
+                pixels[index + 2] = blue
+            }
+        }
+        let provider = try #require(CGDataProvider(data: Data(pixels) as CFData))
+        return try #require(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                   bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                   bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    }
+
     @Test @MainActor func screenshotSelectionMovesResizesAndClearsWindowIdentity() throws {
         let view = ShotSelection(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         view.mode = .window
@@ -922,9 +983,10 @@ struct ScreenshotChecks {
                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         let image = try #require(context.makeImage())
         let visible = NSRect(x: -1440, y: 100, width: 1440, height: 875)
+        let screen = NSRect(x: -1440, y: 68, width: 1440, height: 932)
         for y: CGFloat in [200, 670] {
             let region = NSRect(x: -1000, y: y, width: 400, height: 300)
-            let editor = MarkEditor(image: image, scale: 2, visible: visible, region: region)
+            let editor = MarkEditor(image: image, scale: 2, screen: screen, visible: visible, region: region)
             #expect(editor.canvas.unit == 0.5)
             #expect(editor.canvas.frame.offsetBy(dx: editor.panel.frame.minX, dy: editor.panel.frame.minY) == region)
             #expect(visible.contains(editor.panel.frame))
@@ -935,10 +997,18 @@ struct ScreenshotChecks {
         let tall = try #require(CGContext(data: nil, width: 800, height: 1730, bitsPerComponent: 8, bytesPerRow: 0,
                                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue).flatMap { $0.makeImage() })
         let region = NSRect(x: -1000, y: 105, width: 400, height: 865)
-        let inside = MarkEditor(image: tall, scale: 2, visible: visible, region: region)
+        let inside = MarkEditor(image: tall, scale: 2, screen: screen, visible: visible, region: region)
         let toolbar = try #require(inside.panel.contentView?.subviews.last as? GlassPanel)
         #expect(region.contains(toolbar.frame.offsetBy(dx: inside.panel.frame.minX, dy: inside.panel.frame.minY)))
-        let fallback = MarkEditor(image: tall, scale: 2, visible: visible, region: region.offsetBy(dx: 0, dy: -10))
+        let edgeImage = try #require(CGContext(data: nil, width: 2880, height: 1750, bitsPerComponent: 8, bytesPerRow: 0,
+                                               space: CGColorSpaceCreateDeviceRGB(),
+                                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue).flatMap { $0.makeImage() })
+        let edge = MarkEditor(image: edgeImage, scale: 2, screen: screen, visible: visible, region: visible)
+        #expect(edge.canvas.unit == 0.5)
+        #expect(edge.canvas.frame.offsetBy(dx: edge.panel.frame.minX, dy: edge.panel.frame.minY) == visible)
+        let edgeToolbar = try #require(edge.panel.contentView?.subviews.last as? GlassPanel)
+        #expect(visible.contains(edgeToolbar.frame.offsetBy(dx: edge.panel.frame.minX, dy: edge.panel.frame.minY)))
+        let fallback = MarkEditor(image: tall, scale: 2, screen: screen, visible: visible, region: region.offsetBy(dx: 0, dy: -60))
         #expect(fallback.canvas.unit < 0.5)
         #expect(visible.contains(fallback.panel.frame))
     }
@@ -949,7 +1019,7 @@ struct ScreenshotChecks {
                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         let image = try #require(context.makeImage())
         let visible = NSRect(x: 0, y: 0, width: 1440, height: 875)
-        let editor = MarkEditor(image: image, scale: 2, visible: visible)
+        let editor = MarkEditor(image: image, scale: 2, screen: visible, visible: visible)
         #expect(visible.contains(editor.panel.frame))
         #expect(editor.canvas.frame.height >= 766 && editor.canvas.frame.height <= 767)
         #expect(abs(editor.canvas.frame.width / editor.canvas.frame.height - 4 / 3) < 0.01)

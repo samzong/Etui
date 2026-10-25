@@ -69,6 +69,21 @@ struct ScrollFrame {
     }
 }
 
+struct ShotFrame {
+    let image: CGImage
+    let scale: CGFloat
+
+    func crop(_ rect: CGRect, screenHeight: CGFloat) -> CGImage? {
+        guard scale > 0, rect.width >= 1, rect.height >= 1 else { return nil }
+        let x = max(0, Int(rect.minX * scale))
+        let y = max(0, Int((screenHeight - rect.maxY) * scale))
+        guard x < image.width, y < image.height else { return nil }
+        let width = min(image.width - x, max(1, Int(rect.width * scale)))
+        let height = min(image.height - y, max(1, Int(rect.height * scale)))
+        return image.cropping(to: CGRect(x: x, y: y, width: width, height: height))
+    }
+}
+
 struct ScrollShot {
     enum Failure: String {
         case overlap = "No reliable overlap. Scroll back, then move down more slowly."
@@ -136,6 +151,7 @@ final class Screenshot {
     private var controls: ShotPanel?
     private var task: Task<Void, Never>?
     private var shot: ScrollShot?
+    private var frames: [CGDirectDisplayID: ShotFrame] = [:]
     private var clipboard: Clipboard
     private var caller: NSRunningApplication?
     private var finishing = false
@@ -148,10 +164,9 @@ final class Screenshot {
         guard task == nil else { return }
         caller = NSWorkspace.shared.frontmostApplication
         task = Task {
+            let content: SCShareableContent
             do {
-                let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
-                guard !Task.isCancelled else { return }
-                select(content: content)
+                content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             } catch {
                 guard !Task.isCancelled else { return }
                 cancel()
@@ -159,8 +174,46 @@ final class Screenshot {
                 alert.messageText = "Screen capture unavailable"
                 alert.informativeText = "Allow Etui in System Settings → Privacy & Security → Screen & System Audio Recording, then try again.\n\n\(error.localizedDescription)"
                 alert.runModal()
+                return
             }
+            guard !Task.isCancelled else { return }
+            do {
+                let frozen = try await freeze(content)
+                guard !frozen.isEmpty else { return fail("Could not capture the screen.") }
+                frames = frozen
+            } catch {
+                guard !Task.isCancelled else { return }
+                return fail(error.localizedDescription)
+            }
+            guard !Task.isCancelled else { return }
+            select(content: content)
         }
+    }
+
+    private func freeze(_ content: SCShareableContent) async throws -> [CGDirectDisplayID: ShotFrame] {
+        let excluded = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+        var frozen: [CGDirectDisplayID: ShotFrame] = [:]
+        for screen in NSScreen.screens {
+            guard !Task.isCancelled else { return [:] }
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32,
+                  let display = content.displays.first(where: { $0.displayID == number }) else { continue }
+            let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+            let config = SCStreamConfiguration()
+            let scale = CGFloat(filter.pointPixelScale)
+            config.sourceRect = CGRect(x: 0, y: 0, width: screen.frame.width, height: screen.frame.height)
+            config.width = Int(screen.frame.width * scale)
+            config.height = Int(screen.frame.height * scale)
+            config.showsCursor = true
+            config.captureResolution = .best
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let actual = screen.frame.width > 0 ? CGFloat(image.width) / screen.frame.width : scale
+            frozen[display.displayID] = ShotFrame(image: image, scale: actual)
+        }
+        return frozen
+    }
+
+    private func selection(on panel: NSPanel) -> ShotSelection? {
+        panel.contentView as? ShotSelection
     }
 
     private func select(content: SCShareableContent) {
@@ -204,12 +257,12 @@ final class Screenshot {
                 toolbar.onSubmit = nil
                 toolbar.onMarkup = nil
                 for panel in overlays {
-                    guard let view = panel.contentView as? ShotSelection else { continue }
+                    guard let view = selection(on: panel) else { continue }
                     view.mode = mode
                     if previous == .window || mode == .window { view.clear() }
                     if !view.area.isEmpty { view.selected?(view.area, nil) }
                 }
-                if overlays.allSatisfy({ ($0.contentView as? ShotSelection)?.area.isEmpty == true }) {
+                if overlays.allSatisfy({ selection(on: $0)?.area.isEmpty == true }) {
                     (overlays.first { $0.frame.contains(NSEvent.mouseLocation) } ?? overlays.first)?.makeKeyAndOrderFront(nil)
                 }
             }
@@ -237,15 +290,19 @@ final class Screenshot {
         controls = toolbar
         for screen in NSScreen.screens {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? UInt32,
-                  let display = content.displays.first(where: { $0.displayID == number }) else { continue }
+                  let display = content.displays.first(where: { $0.displayID == number }),
+                  let snapshot = frames[display.displayID]?.image else { continue }
             let panel = ShotPanel(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
             panel.configureFloatingPanel()
             panel.level = .statusBar
+            panel.isOpaque = true
+            panel.backgroundColor = .black
             panel.hasShadow = false
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.onCancel = { [weak self] in self?.cancel() }
             panel.onKeyEquivalent = { [weak toolbar] event in toolbar?.performKeyEquivalent(with: event) ?? false }
             let view = ShotSelection(frame: NSRect(origin: .zero, size: screen.frame.size))
+            view.snapshot = snapshot
             view.windows = windows.map { window in
                 NSRect(x: window.frame.minX - screen.frame.minX,
                        y: desktopTop - window.frame.maxY - screen.frame.minY,
@@ -253,8 +310,9 @@ final class Screenshot {
             }
             view.selected = { [weak self, weak toolbar, weak view] rect, windowIndex in
                 guard let self, let toolbar, let view else { return }
-                for other in overlays where other.contentView !== view {
-                    (other.contentView as? ShotSelection)?.clear()
+                for other in overlays {
+                    guard let selection = selection(on: other), selection !== view else { continue }
+                    selection.clear()
                 }
                 submit.isEnabled = rect.width >= 32 && rect.height >= (mode == .scroll ? 64 : 32)
                 markup.isEnabled = submit.isEnabled && mode != .scroll
@@ -266,8 +324,8 @@ final class Screenshot {
                 if view.isDragging { toolbar.orderFrontRegardless() } else { toolbar.makeKeyAndOrderFront(nil) }
                 let run: (Bool) -> Void = { [weak self, weak view] annotate in
                     guard let self, view != nil, submit.isEnabled else { return }
-                    capture(rect: rect, window: mode == .window ? windowIndex.map { windows[$0] } : nil,
-                            display: display, screen: screen, scrolling: mode == .scroll, annotate: annotate && mode != .scroll)
+                    capture(rect: rect, display: display, screen: screen, scrolling: mode == .scroll,
+                            annotate: annotate && mode != .scroll)
                 }
                 toolbar.onSubmit = { run(false) }
                 toolbar.onMarkup = { run(true) }
@@ -275,6 +333,7 @@ final class Screenshot {
             panel.onSubmit = { [weak toolbar] in toolbar?.onSubmit?() }
             panel.onMarkup = { [weak toolbar] in toolbar?.onMarkup?() }
             panel.contentView = view
+            panel.display()
             overlays.append(panel)
             panel.orderFrontRegardless()
             panel.makeFirstResponder(view)
@@ -288,7 +347,25 @@ final class Screenshot {
         toolbar.orderFrontRegardless()
     }
 
-    private func capture(rect: NSRect, window: SCWindow?, display: SCDisplay, screen: NSScreen, scrolling: Bool, annotate: Bool) {
+    private func capture(rect: NSRect, display: SCDisplay, screen: NSScreen, scrolling: Bool, annotate: Bool) {
+        if !scrolling {
+            guard let frame = frames[display.displayID],
+                  let image = frame.crop(rect, screenHeight: screen.frame.height) else {
+                return fail("Could not crop the screenshot.")
+            }
+            let scale = frame.scale
+            overlays.forEach { $0.orderOut(nil) }
+            overlays.removeAll()
+            controls?.orderOut(nil)
+            controls = nil
+            frames = [:]
+            if annotate {
+                edit(image, scale: scale, screen: screen, region: rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY))
+            } else {
+                copy(image)
+            }
+            return
+        }
         overlays.forEach { $0.ignoresMouseEvents = true }
         controls?.onSubmit = nil
         controls?.onMarkup = nil
@@ -301,51 +378,34 @@ final class Screenshot {
                 overlays.forEach { $0.orderOut(nil) }
                 overlays.removeAll()
                 controls?.orderOut(nil)
-                let filter = window.map { SCContentFilter(desktopIndependentWindow: $0) }
-                    ?? SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
+                frames = [:]
+                let filter = SCContentFilter(display: display, excludingApplications: excluded, exceptingWindows: [])
                 let config = SCStreamConfiguration()
-                config.sourceRect = window == nil
-                    ? CGRect(x: rect.minX, y: screen.frame.height - rect.maxY, width: rect.width, height: rect.height)
-                    : .zero
-                let size = window == nil ? rect.size : filter.contentRect.size
-                config.width = Int(size.width * CGFloat(filter.pointPixelScale))
-                config.height = Int(size.height * CGFloat(filter.pointPixelScale))
+                config.sourceRect = CGRect(x: rect.minX, y: screen.frame.height - rect.maxY, width: rect.width, height: rect.height)
+                config.width = Int(rect.width * CGFloat(filter.pointPixelScale))
+                config.height = Int(rect.height * CGFloat(filter.pointPixelScale))
                 config.showsCursor = false
-                config.ignoreShadowsSingleWindow = true
                 config.captureResolution = .best
-                if scrolling {
-                    let outline = ShotPanel(contentRect: rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY),
-                                            styleMask: [.borderless], backing: .buffered, defer: false)
-                    outline.configureFloatingPanel()
-                    outline.hasShadow = false
-                    outline.ignoresMouseEvents = true
-                    outline.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-                    outline.contentView?.wantsLayer = true
-                    outline.contentView?.layer?.borderColor = NSColor.controlAccentColor.cgColor
-                    outline.contentView?.layer?.borderWidth = 2
-                    overlays = [outline]
-                    outline.orderFrontRegardless()
-                    caller?.activate()
-                    scroll(filter: filter, config: config, screen: screen, rect: outline.frame)
-                } else {
-                    let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-                    guard !Task.isCancelled else { return }
-                    if annotate {
-                        let desktopTop = NSScreen.screens.first?.frame.maxY ?? 0
-                        let region = window.map {
-                            NSRect(x: $0.frame.minX, y: desktopTop - $0.frame.maxY, width: $0.frame.width, height: $0.frame.height)
-                        } ?? rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
-                        edit(image, scale: CGFloat(filter.pointPixelScale), screen: screen, region: region)
-                    } else {
-                        copy(image)
-                    }
-                }
+                let outline = ShotPanel(contentRect: rect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY),
+                                        styleMask: [.borderless], backing: .buffered, defer: false)
+                outline.configureFloatingPanel()
+                outline.hasShadow = false
+                outline.ignoresMouseEvents = true
+                outline.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+                outline.contentView?.wantsLayer = true
+                outline.contentView?.layer?.borderColor = NSColor.controlAccentColor.cgColor
+                outline.contentView?.layer?.borderWidth = 2
+                overlays = [outline]
+                outline.orderFrontRegardless()
+                caller?.activate()
+                scroll(filter: filter, config: config, screen: screen, rect: outline.frame)
             } catch { if !Task.isCancelled { fail(error.localizedDescription) } }
         }
     }
 
     private func edit(_ image: CGImage, scale: CGFloat, screen: NSScreen, region: NSRect) {
-        let editor = MarkEditor(image: image, scale: scale, visible: screen.visibleFrame, region: region)
+        let editor = MarkEditor(image: image, scale: scale, screen: screen.frame, visible: screen.visibleFrame, region: region)
+        editor.panel.level = .statusBar
         editor.panel.onCancel = { [weak self] in self?.cancel() }
         editor.panel.onSubmit = { [weak self, weak canvas = editor.canvas] in
             guard let self, let canvas else { return }
@@ -474,6 +534,7 @@ final class Screenshot {
         controls?.orderOut(nil)
         controls = nil
         shot = nil
+        frames = [:]
         finishing = false
         caller?.activate()
         caller = nil
@@ -531,6 +592,10 @@ enum ShotMode: String, CaseIterable {
 @MainActor
 final class ShotSelection: NSView {
     var windows: [NSRect] = []
+    var snapshot: CGImage? {
+        didSet { snapshotImage = snapshot.map { NSImage(cgImage: $0, size: bounds.size) } }
+    }
+    private var snapshotImage: NSImage?
     var mode = ShotMode.area
     var selected: ((NSRect, Int?) -> Void)?
     private var start: NSPoint?
@@ -631,14 +696,26 @@ final class ShotSelection: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if let snapshotImage {
+            snapshotImage.draw(in: bounds)
+        }
         NSColor.black.withAlphaComponent(0.4).setFill()
-        bounds.fill()
+        if snapshotImage != nil, !area.isEmpty {
+            let dim = NSBezierPath(rect: bounds)
+            dim.append(NSBezierPath(rect: area))
+            dim.windingRule = .evenOdd
+            dim.fill()
+        } else {
+            bounds.fill()
+        }
         if !area.isEmpty {
-            NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current?.compositingOperation = .copy
-            NSColor.black.withAlphaComponent(0.01).setFill()
-            area.fill()
-            NSGraphicsContext.restoreGraphicsState()
+            if snapshotImage == nil {
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current?.compositingOperation = .copy
+                NSColor.black.withAlphaComponent(0.01).setFill()
+                area.fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
             NSColor.controlAccentColor.setStroke()
             let border = NSBezierPath(rect: area)
             border.lineWidth = 2

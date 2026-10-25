@@ -262,9 +262,9 @@ final class MarkEditor {
     let panel: ShotPanel
     let canvas: MarkCanvas
 
-    init(image: CGImage, scale: CGFloat, visible: NSRect, region: NSRect? = nil) {
+    init(image: CGImage, scale: CGFloat, screen: NSRect, visible: NSRect, region: NSRect? = nil) {
         let natural = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-        let inPlace = region.map { visible.contains($0.insetBy(dx: -2, dy: -2)) } ?? false
+        let inPlace = region.map { screen.contains($0) } ?? false
         let zoom = inPlace ? 1 : min(1, (visible.width - 48) / natural.width, (visible.height - 108) / natural.height)
         canvas = MarkCanvas(image: image, unit: zoom / scale, lineWidth: Markup.width * scale)
         let toolbarSize = NSSize(width: 292, height: 48)
