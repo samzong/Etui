@@ -4,30 +4,36 @@ enum Mark: Equatable {
     case rect(NSRect)
     case arrow(NSPoint, NSPoint)
     case text(String, NSPoint)
+    case mosaic(NSRect)
 }
 
 enum MarkTool: String, CaseIterable {
     case rect = "Rectangle"
     case arrow = "Arrow"
     case text = "Text"
+    case mosaic = "Mosaic"
 
     var symbol: String {
         switch self {
         case .rect: "rectangle"
         case .arrow: "arrow.up.right"
         case .text: "textformat"
+        case .mosaic: "checkerboard.rectangle"
         }
     }
 
     func mark(from start: NSPoint, to end: NSPoint) -> Mark? {
-        switch self {
+        let rect = NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
+                          width: abs(end.x - start.x), height: abs(end.y - start.y))
+        return switch self {
         case .rect:
-            .rect(NSRect(x: min(start.x, end.x), y: min(start.y, end.y),
-                         width: abs(end.x - start.x), height: abs(end.y - start.y)))
+            .rect(rect)
         case .arrow:
             .arrow(start, end)
         case .text:
             nil
+        case .mosaic:
+            rect.width >= 1 && rect.height >= 1 ? .mosaic(rect) : nil
         }
     }
 }
@@ -40,7 +46,93 @@ enum Markup {
         .systemFont(ofSize: 20 * lineWidth / width)
     }
 
-    static func render(_ marks: [Mark], in context: CGContext, lineWidth: CGFloat) {
+    static func blockSize(lineWidth: CGFloat) -> Int {
+        max(4, Int((lineWidth * 4).rounded()))
+    }
+
+    static func mosaic(_ image: CGImage, blockSize step: Int) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0, step > 0 else { return nil }
+        let space = CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGImageAlphaInfo.premultipliedLast.rawValue
+        var source = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = source.withUnsafeMutableBytes { bytes -> Bool in
+            guard let context = CGContext(data: bytes.baseAddress, width: width, height: height,
+                                          bitsPerComponent: 8, bytesPerRow: width * 4,
+                                          space: space, bitmapInfo: bitmapInfo) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { return nil }
+        let cols = (width + step - 1) / step
+        let rows = (height + step - 1) / step
+        var dest = [UInt8](repeating: 0, count: cols * rows * 4)
+        source.withUnsafeBufferPointer { src in
+            dest.withUnsafeMutableBufferPointer { dst in
+                for cy in 0..<rows {
+                    let sy0 = max(0, min(cy * step, height - step))
+                    let sy1 = min(height, (cy + 1) * step)
+                    let py0 = height - sy1
+                    let py1 = height - sy0
+                    let ty = rows - 1 - cy
+                    for cx in 0..<cols {
+                        let sx0 = max(0, min(cx * step, width - step))
+                        let sx1 = min(width, (cx + 1) * step)
+                        let count = (sx1 - sx0) * (py1 - py0)
+                        var r = 0
+                        var g = 0
+                        var b = 0
+                        var a = 0
+                        for py in py0..<py1 {
+                            let row = py * width
+                            for px in sx0..<sx1 {
+                                let i = (row + px) * 4
+                                r += Int(src[i])
+                                g += Int(src[i + 1])
+                                b += Int(src[i + 2])
+                                a += Int(src[i + 3])
+                            }
+                        }
+                        let half = count / 2
+                        let out = (ty * cols + cx) * 4
+                        dst[out] = UInt8((r + half) / count)
+                        dst[out + 1] = UInt8((g + half) / count)
+                        dst[out + 2] = UInt8((b + half) / count)
+                        dst[out + 3] = UInt8((a + half) / count)
+                    }
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(dest) as CFData) else { return nil }
+        return CGImage(width: cols, height: rows, bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: cols * 4, space: space,
+                       bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    static func render(_ marks: [Mark], in context: CGContext, image: CGImage, mosaic tiles: CGImage? = nil, lineWidth: CGFloat) {
+        let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        let mosaicRects = marks.compactMap { mark -> CGRect? in
+            guard case .mosaic(let rect) = mark else { return nil }
+            let clipped = rect.intersection(bounds)
+            guard clipped.width > 0, clipped.height > 0 else { return nil }
+            let snapped = clipped.integral.intersection(bounds)
+            return snapped.width > 0 && snapped.height > 0 ? snapped : nil
+        }
+        if !mosaicRects.isEmpty {
+            let step = blockSize(lineWidth: lineWidth)
+            if let tiles = tiles ?? mosaic(image, blockSize: step) {
+                let target = CGRect(x: 0, y: 0, width: tiles.width * step, height: tiles.height * step)
+                for rect in mosaicRects {
+                    context.saveGState()
+                    context.clip(to: rect)
+                    context.interpolationQuality = .none
+                    context.draw(tiles, in: target)
+                    context.restoreGState()
+                }
+            }
+        }
         context.saveGState()
         context.setStrokeColor(color.cgColor)
         context.setLineWidth(lineWidth)
@@ -67,17 +159,19 @@ enum Markup {
                 NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
                 string.draw(at: NSPoint(x: point.x, y: point.y - string.size().height))
                 NSGraphicsContext.restoreGraphicsState()
+            case .mosaic:
+                break
             }
         }
         context.restoreGState()
     }
 
-    static func export(_ image: CGImage, marks: [Mark], lineWidth: CGFloat) -> CGImage? {
+    static func export(_ image: CGImage, marks: [Mark], mosaic: CGImage? = nil, lineWidth: CGFloat) -> CGImage? {
         guard let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
                                       bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        render(marks, in: context, lineWidth: lineWidth)
+        render(marks, in: context, image: image, mosaic: mosaic, lineWidth: lineWidth)
         return context.makeImage()
     }
 }
@@ -88,11 +182,15 @@ final class MarkCanvas: NSView {
     let unit: CGFloat
     let lineWidth: CGFloat
     var tool = MarkTool.rect {
-        didSet { finishText() }
+        didSet {
+            finishText()
+            window?.invalidateCursorRects(for: self)
+        }
     }
     private(set) var marks: [Mark] = []
     private var start: NSPoint?
     private var pending: Mark?
+    private var mosaicTiles: CGImage?
     private let history = UndoManager()
     private var input: MarkTextView?
     private var textPoint: NSPoint?
@@ -114,7 +212,7 @@ final class MarkCanvas: NSView {
     override var undoManager: UndoManager? { history }
 
     var exported: CGImage? {
-        Markup.export(image, marks: marks, lineWidth: lineWidth)
+        Markup.export(image, marks: marks, mosaic: mosaicTiles, lineWidth: lineWidth)
     }
 
     private func pixel(_ event: NSEvent) -> NSPoint {
@@ -224,11 +322,20 @@ final class MarkCanvas: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let all = marks + (pending.map { [$0] } ?? [])
+        if mosaicTiles == nil, all.contains(where: { if case .mosaic = $0 { true } else { false } }) {
+            mosaicTiles = Markup.mosaic(image, blockSize: Markup.blockSize(lineWidth: lineWidth))
+        }
         context.interpolationQuality = .high
         context.draw(image, in: bounds)
         context.saveGState()
         context.scaleBy(x: unit, y: unit)
-        Markup.render(marks + (pending.map { [$0] } ?? []), in: context, lineWidth: lineWidth)
+        Markup.render(all, in: context, image: image, mosaic: mosaicTiles, lineWidth: lineWidth)
+        if case .mosaic(let rect) = pending {
+            context.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            context.setLineWidth(1 / unit)
+            context.stroke(rect)
+        }
         context.restoreGState()
     }
 }
@@ -267,7 +374,8 @@ final class MarkEditor {
         let inPlace = region.map { screen.contains($0) } ?? false
         let zoom = inPlace ? 1 : min(1, (visible.width - 48) / natural.width, (visible.height - 108) / natural.height)
         canvas = MarkCanvas(image: image, unit: zoom / scale, lineWidth: Markup.width * scale)
-        let toolbarSize = NSSize(width: 292, height: 48)
+        let undoX = 12 + CGFloat(MarkTool.allCases.count) * 36
+        let toolbarSize = NSSize(width: undoX + 136, height: 48)
         let frame: NSRect
         let toolbarFrame: NSRect
         if inPlace, let region {
@@ -328,7 +436,7 @@ final class MarkEditor {
             toolbar.addSubview(button)
         }
         let undo = Tap(symbol: "arrow.uturn.backward", flat: true) { [weak canvas] in canvas?.undo(nil) }
-        undo.frame = NSRect(x: 120, y: 8, width: 32, height: 32)
+        undo.frame = NSRect(x: undoX, y: 8, width: 32, height: 32)
         undo.toolTip = "Undo · ⌘Z"
         undo.setAccessibilityLabel("Undo markup")
         let divider = NSBox(frame: NSRect(x: width - 94, y: 12, width: 1, height: 24))
