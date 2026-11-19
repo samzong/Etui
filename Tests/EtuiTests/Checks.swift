@@ -1044,6 +1044,87 @@ struct ScreenshotChecks {
         selection.keyDown(with: try press(36))
         #expect(events.suffix(2) == ["markup", "copy"])
     }
+
+    @Test @MainActor func markupMosaicAveragesBlocksClipsAndKeepsAnnotationsAbove() throws {
+        let image = try solid(201, 161) { x, py in
+            let y = 160 - py
+            if (16..<80).contains(x), (16..<80).contains(y) {
+                return (x / 2).isMultiple(of: 2) ? (0, 0, 0) : (0, 200, 0)
+            }
+            if x == 200, (100..<140).contains(y) {
+                return (255, 0, 0)
+            }
+            return (255, 255, 255)
+        }
+        let editor = MarkEditor(image: image, scale: 2, screen: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                visible: NSRect(x: 0, y: 0, width: 1440, height: 875))
+        let toolbar = try #require(editor.panel.contentView?.subviews.last as? GlassPanel)
+        let controls = toolbar.subviews.filter { $0 is Tap || $0 is NSBox }
+        let tools = controls.compactMap { $0 as? Tap }.filter { $0.tag > 0 }
+        #expect(controls.count == 8)
+        #expect(tools.count == 4)
+        for i in controls.indices {
+            for j in (i + 1)..<controls.count {
+                #expect(!controls[i].frame.intersects(controls[j].frame))
+            }
+        }
+        let cmd4 = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                                 windowNumber: 0, context: nil, characters: "4",
+                                                 charactersIgnoringModifiers: "4", isARepeat: false, keyCode: 21))
+        #expect(editor.panel.performKeyEquivalent(with: cmd4))
+        #expect(editor.canvas.tool == .mosaic)
+        #expect(tools.first { $0.tag == 4 }?.state == .on)
+
+        let canvas = MarkCanvas(image: image, unit: 0.5, lineWidth: 4)
+        canvas.tool = .mosaic
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 10, 60))
+        canvas.mouseDragged(with: try mouse(.leftMouseDragged, 50, 60))
+        canvas.mouseUp(with: try mouse(.leftMouseUp, 50, 60))
+        #expect(canvas.marks.isEmpty)
+
+        canvas.tool = .rect
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 14, 14))
+        canvas.mouseDragged(with: try mouse(.leftMouseDragged, 34, 34))
+        canvas.mouseUp(with: try mouse(.leftMouseUp, 34, 34))
+        canvas.tool = .mosaic
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 10, 10))
+        canvas.mouseDragged(with: try mouse(.leftMouseDragged, 38, 38))
+        canvas.mouseUp(with: try mouse(.leftMouseUp, 38, 38))
+        #expect(canvas.marks == [.rect(NSRect(x: 28, y: 28, width: 40, height: 40)),
+                                 .mosaic(NSRect(x: 20, y: 20, width: 56, height: 56))])
+
+        func pixel(_ rep: NSBitmapImageRep, _ x: Int, _ y: Int) throws -> NSColor {
+            try #require(rep.colorAt(x: x, y: 160 - y))
+        }
+
+        let exported = try #require(canvas.exported)
+        let rep = NSBitmapImageRep(cgImage: exported)
+        for y in stride(from: 32, to: 64, by: 4) {
+            for x in stride(from: 32, to: 64, by: 4) {
+                let color = try pixel(rep, x, y)
+                #expect(color.greenComponent > 0.3 && color.greenComponent < 0.5)
+                #expect(color.redComponent < 0.1)
+            }
+        }
+        #expect(try pixel(rep, 16, 48).greenComponent < 0.1)
+        #expect(try pixel(rep, 18, 48).greenComponent > 0.7)
+        let border = try pixel(rep, 28, 48)
+        #expect(border.redComponent > 0.8 && border.greenComponent < 0.35)
+
+        canvas.undo(nil)
+        let undone = NSBitmapImageRep(cgImage: try #require(canvas.exported))
+        #expect(try pixel(undone, 32, 48).greenComponent < 0.1)
+        #expect(try pixel(undone, 34, 48).greenComponent > 0.7)
+
+        canvas.redo(nil)
+        let redone = NSBitmapImageRep(cgImage: try #require(canvas.exported))
+        #expect(try pixel(redone, 32, 48).greenComponent > 0.3 && pixel(redone, 32, 48).greenComponent < 0.5)
+        canvas.mouseDown(with: try mouse(.leftMouseDown, 95, 50))
+        canvas.mouseDragged(with: try mouse(.leftMouseDragged, 100.5, 70))
+        canvas.mouseUp(with: try mouse(.leftMouseUp, 100.5, 70))
+        let edge = NSBitmapImageRep(cgImage: try #require(canvas.exported))
+        #expect(try pixel(edge, 200, 120).greenComponent > 0.8)
+    }
 }
 
 private func tempHome() throws -> URL {
