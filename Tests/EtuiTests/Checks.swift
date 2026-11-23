@@ -430,6 +430,22 @@ private actor SleepBackend {
         #expect(Catalog.scan(roots: [root.path], panes: nil, extras: [finder]).filter { $0.id == "com.apple.finder" }.count == 1)
     }
 
+    @Test func chineseAppNamesMatchPinyin() throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for (path, name) in [("抖音.app", "抖音"), ("微信.app", "微信"),
+                             ("QQ音乐.app", "QQMusic"), ("Notes.app", "备忘录")] {
+            try writeBundle(root, path, ["CFBundleIdentifier": path, "CFBundleName": name])
+        }
+        let apps = Catalog.applyDisplayNames(Catalog.scan(roots: [root.path], panes: nil, extras: []))
+        let history = History()
+        for (query, id) in [("douyin", "抖音.app"), ("DOUY", "抖音.app"), ("weixin", "微信.app"),
+                            ("qqyinyue", "QQ音乐.app"), ("yinyue", "QQ音乐.app"), ("beiwanglu", "Notes.app"),
+                            ("抖音", "抖音.app"), ("qqmusic", "QQ音乐.app"), ("notes", "Notes.app")] {
+            #expect(Rank.query(query, apps: apps, history: history, now: 0).map(\.id) == [id], "\(query)")
+        }
+    }
+
     @Test func catalogMalformedPlists() throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
