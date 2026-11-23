@@ -132,14 +132,36 @@ enum Catalog {
         entries.map { entry in
             guard entry.kind == .app else { return entry }
             let display = cleanName(FileManager.default.displayName(atPath: entry.path))
-            guard !display.isEmpty, !sameBytes(display, entry.name) else { return entry }
             var renamed = entry
-            if !renamed.aliases.contains(where: { sameBytes($0, entry.name) }) {
-                renamed.aliases.append(entry.name)
+            if !display.isEmpty, !sameBytes(display, entry.name) {
+                if !renamed.aliases.contains(where: { sameBytes($0, entry.name) }) {
+                    renamed.aliases.append(entry.name)
+                }
+                renamed.name = display
             }
-            renamed.name = display
+            for alias in ([renamed.name] + renamed.aliases).flatMap(pinyinAliases) {
+                if !renamed.aliases.contains(where: { sameBytes($0, alias) }) {
+                    renamed.aliases.append(alias)
+                }
+            }
             return renamed
         }
+    }
+
+    private static func pinyinAliases(_ name: String) -> [String] {
+        guard name.unicodeScalars.contains(where: { $0.properties.isIdeographic }) else { return [] }
+        let text = name as NSString
+        let tokenizer = CFStringTokenizerCreate(nil, text, CFRange(location: 0, length: text.length),
+                                               kCFStringTokenizerUnitWord | kCFStringTokenizerAttributeLatinTranscription, nil)
+        var words: [String] = []
+        while CFStringTokenizerAdvanceToNextToken(tokenizer).rawValue != 0 {
+            let range = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            let word = CFStringTokenizerCopyCurrentTokenAttribute(tokenizer, kCFStringTokenizerAttributeLatinTranscription) as? String
+                ?? text.substring(with: NSRange(location: range.location, length: range.length))
+            words.append(lowercase(word.applyingTransform(.stripDiacritics, reverse: false) ?? word))
+        }
+        guard !words.isEmpty else { return [] }
+        return [words.joined(), words.joined(separator: " ")]
     }
 
     static func cleanName(_ name: String) -> String {
