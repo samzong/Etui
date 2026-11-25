@@ -32,6 +32,7 @@ jobs:
       core: ${{ steps.meta.outputs.core }}
       build_version: ${{ steps.meta.outputs.build_version }}
       is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      commit: ${{ steps.meta.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         if: github.event_name == 'pull_request'
@@ -73,8 +74,9 @@ jobs:
               exit 1
             fi
           done
+          commit="$(git rev-parse HEAD)"
           if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
-            if [[ "$(git rev-parse HEAD)" != "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
+            if [[ "$commit" != "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
               echo "::error::Checked out commit does not match tag $RELEASE_TAG"
               exit 1
             fi
@@ -88,6 +90,7 @@ jobs:
           echo "core=$core" >> "$GITHUB_OUTPUT"
           echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
           echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           xcrun --sdk macosx --show-sdk-version
           swift --version
           test "$(uname -m)" = arm64
@@ -121,12 +124,12 @@ jobs:
           path: .local/dist/Etui-${{ steps.meta.outputs.version }}-arm64.dmg
           if-no-files-found: error
 
-  release:
+  notes:
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -135,10 +138,19 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          name: Etui-arm64
-          path: dist
+      - name: Verify commit parity
+        env:
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Notes checkout HEAD does not match built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
+          if [[ "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Tag $RELEASE_TAG does not point to built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
 
       - name: Extract release notes from CHANGELOG.md
         id: changelog
@@ -182,21 +194,83 @@ jobs:
               fh.write("found=true\n")
           PY
 
-      - name: Generate release notes with git-cliff
+      - name: Generate release notes with verified git-cliff
         if: steps.changelog.outputs.found != 'true'
-        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff
+        run: |
+          set -euo pipefail
+          cliff_ver="2.14.2"
+          cliff_sha256="24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"
+          cliff_tar="git-cliff-${cliff_ver}-x86_64-unknown-linux-gnu.tar.gz"
+          cliff_dir="$(mktemp -d)"
+          trap 'rm -rf "$cliff_dir"' EXIT
+          curl -fsSL -o "${cliff_dir}/${cliff_tar}" "https://github.com/orhun/git-cliff/releases/download/v${cliff_ver}/${cliff_tar}"
+          echo "${cliff_sha256}  ${cliff_dir}/${cliff_tar}" | sha256sum -c -
+          tar -xzf "${cliff_dir}/${cliff_tar}" -C "$cliff_dir"
+          mkdir -p dist
+          "${cliff_dir}/git-cliff-${cliff_ver}/git-cliff" --config cliff.toml --current --strip all --output dist/release-notes.md
+
+      - name: Validate release notes
+        run: |
+          set -euo pipefail
+          python3 - dist/release-notes.md <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(f"::error::Missing release notes file: {path}")
+
+          lines = path.read_text(encoding="utf-8").splitlines()
+          body = [ln for ln in lines if ln.strip() and not ln.startswith("## [")]
+          if not body:
+              raise SystemExit("::error::Release notes body is empty")
+          PY
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          config: cliff.toml
-          args: --current --strip all --output dist/release-notes.md
+          name: Etui-release-notes
+          path: dist/release-notes.md
+          if-no-files-found: error
+
+  release:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
+    needs: [build, notes]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: Etui-arm64
+          path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: Etui-release-notes
+          path: dist/notes
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
           IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           set -euo pipefail
-          notes_file="dist/release-notes.md"
+          tag_obj="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          obj_type="$(jq -r '.object.type' <<< "$tag_obj")"
+          obj_sha="$(jq -r '.object.sha' <<< "$tag_obj")"
+          if [[ "$obj_type" == "tag" ]]; then
+            remote_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$obj_sha" --jq '.object.sha')"
+          else
+            remote_commit="$obj_sha"
+          fi
+          if [[ "$remote_commit" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Tag $RELEASE_TAG points to $remote_commit instead of built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
+          notes_file="dist/notes/release-notes.md"
           python3 - "$notes_file" <<'PY'
           import sys
           from pathlib import Path
