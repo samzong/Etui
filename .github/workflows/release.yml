@@ -5,39 +5,92 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify and publish
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_REF: refs/tags/${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 30
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      core: ${{ steps.meta.outputs.core }}
+      build_version: ${{ steps.meta.outputs.build_version }}
+      is_prerelease: ${{ steps.meta.outputs.is_prerelease }}
+      commit: ${{ steps.meta.outputs.commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: github.event_name == 'pull_request'
         with:
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
 
-      - name: Set release version
-        id: version
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        if: github.event_name != 'pull_request'
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify SemVer tag and tracked Info.plist
+        id: meta
         run: |
+          set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             RELEASE_TAG="v$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
           fi
-          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo '::error::Use a release tag in the form vMAJOR.MINOR.PATCH.'
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((alpha|beta|rc)\.[1-9][0-9]*))?$ ]]; then
+            echo "::error::Invalid SemVer release tag: $RELEASE_TAG"
             exit 1
           fi
           version="${RELEASE_TAG#v}"
+          core="${version%%-*}"
+          for plist in Info.plist Resources/Pinyin/Info.plist; do
+            plist_short="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+            if [[ "$plist_short" != "$core" ]]; then
+              echo "::error::$plist CFBundleShortVersionString=$plist_short does not match release core $core"
+              exit 1
+            fi
+            plist_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+            if [[ -z "$plist_build" ]]; then
+              echo "::error::$plist CFBundleVersion is missing"
+              exit 1
+            fi
+          done
+          commit="$(git rev-parse HEAD)"
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            if [[ "$commit" != "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" ]]; then
+              echo "::error::Checked out commit does not match tag $RELEASE_TAG"
+              exit 1
+            fi
+          fi
+          is_prerelease="false"
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            is_prerelease="true"
+          fi
+          build_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' Info.plist)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" Info.plist
-          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" Info.plist
+          echo "core=$core" >> "$GITHUB_OUTPUT"
+          echo "build_version=$build_version" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
           xcrun --sdk macosx --show-sdk-version
           swift --version
           test "$(uname -m)" = arm64
@@ -47,13 +100,17 @@ jobs:
 
       - name: Package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          CORE: ${{ steps.meta.outputs.core }}
+          BUILD_VERSION: ${{ steps.meta.outputs.build_version }}
         run: |
+          set -euo pipefail
           asset=".local/dist/Etui-$VERSION-arm64.dmg"
           make dmg IDENTITY= DMG="$asset"
+          hdiutil verify "$asset"
           app=".local/dist/Etui.app"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$VERSION"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$CORE"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")" = "$BUILD_VERSION"
           for executable in Etui DisplayGuardian; do
             test "$(lipo -archs "$app/Contents/MacOS/$executable")" = arm64
           done
@@ -64,26 +121,178 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: Etui-arm64
-          path: .local/dist/Etui-${{ steps.version.outputs.version }}-arm64.dmg
+          path: .local/dist/Etui-${{ steps.meta.outputs.version }}-arm64.dmg
           if-no-files-found: error
 
-  release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  notes:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Verify commit parity
+        env:
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Notes checkout HEAD does not match built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
+          if [[ "$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Tag $RELEASE_TAG does not point to built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
+
+      - name: Extract release notes from CHANGELOG.md
+        id: changelog
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          changelog = Path("CHANGELOG.md")
+          if not changelog.is_file():
+              raise SystemExit(0)
+
+          lines = changelog.read_text(encoding="utf-8").splitlines()
+          prefix = f"## [{version}]"
+          start = None
+          for idx, line in enumerate(lines):
+              if line == prefix or line.startswith(f"{prefix} "):
+                  start = idx
+                  break
+          if start is None:
+              raise SystemExit(0)
+
+          end = len(lines)
+          for idx in range(start + 1, len(lines)):
+              if lines[idx].startswith("## ["):
+                  end = idx
+                  break
+
+          section = "\n".join(lines[start:end]).strip()
+          body_lines = [ln for ln in lines[start + 1 : end] if ln.strip()]
+          if not body_lines:
+              raise SystemExit(f"::error::CHANGELOG.md section for {version} is empty")
+
+          Path("dist").mkdir(parents=True, exist_ok=True)
+          Path("dist/release-notes.md").write_text(section + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("found=true\n")
+          PY
+
+      - name: Generate release notes with verified git-cliff
+        if: steps.changelog.outputs.found != 'true'
+        run: |
+          set -euo pipefail
+          cliff_ver="2.14.2"
+          cliff_sha256="24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4"
+          cliff_tar="git-cliff-${cliff_ver}-x86_64-unknown-linux-gnu.tar.gz"
+          cliff_dir="$(mktemp -d)"
+          trap 'rm -rf "$cliff_dir"' EXIT
+          curl -fsSL -o "${cliff_dir}/${cliff_tar}" "https://github.com/orhun/git-cliff/releases/download/v${cliff_ver}/${cliff_tar}"
+          echo "${cliff_sha256}  ${cliff_dir}/${cliff_tar}" | sha256sum -c -
+          tar -xzf "${cliff_dir}/${cliff_tar}" -C "$cliff_dir"
+          mkdir -p dist
+          "${cliff_dir}/git-cliff-${cliff_ver}/git-cliff" --config cliff.toml --current --strip all --output dist/release-notes.md
+
+      - name: Validate release notes
+        run: |
+          set -euo pipefail
+          python3 - dist/release-notes.md <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(f"::error::Missing release notes file: {path}")
+
+          lines = path.read_text(encoding="utf-8").splitlines()
+          body = [ln for ln in lines if ln.strip() and not ln.startswith("## [")]
+          if not body:
+              raise SystemExit("::error::Release notes body is empty")
+          PY
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: Etui-release-notes
+          path: dist/release-notes.md
+          if-no-files-found: error
+
+  release:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch'
+    needs: [build, notes]
+    runs-on: ubuntu-latest
+    permissions:
       contents: write
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: Etui-arm64
           path: dist
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: Etui-release-notes
+          path: dist/notes
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
         run: |
-          gh release create "$RELEASE_TAG" "dist/Etui-${RELEASE_TAG#v}-arm64.dmg" \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$RELEASE_TAG" --generate-notes
+          set -euo pipefail
+          tag_obj="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG")"
+          obj_type="$(jq -r '.object.type' <<< "$tag_obj")"
+          obj_sha="$(jq -r '.object.sha' <<< "$tag_obj")"
+          if [[ "$obj_type" == "tag" ]]; then
+            remote_commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$obj_sha" --jq '.object.sha')"
+          else
+            remote_commit="$obj_sha"
+          fi
+          if [[ "$remote_commit" != "$EXPECTED_COMMIT" ]]; then
+            echo "::error::Tag $RELEASE_TAG points to $remote_commit instead of built commit $EXPECTED_COMMIT"
+            exit 1
+          fi
+          notes_file="dist/notes/release-notes.md"
+          python3 - "$notes_file" <<'PY'
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          if not path.is_file():
+              raise SystemExit(f"::error::Missing release notes file: {path}")
+
+          lines = path.read_text(encoding="utf-8").splitlines()
+          body = [ln for ln in lines if ln.strip() and not ln.startswith("## [")]
+          if not body:
+              raise SystemExit("::error::Release notes body is empty")
+          PY
+          args=(
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --title "$RELEASE_TAG"
+            --notes-file "$notes_file"
+          )
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          else
+            args+=(--latest)
+          fi
+          gh release create "$RELEASE_TAG" "dist/Etui-${VERSION}-arm64.dmg" "${args[@]}"
