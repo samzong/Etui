@@ -1,6 +1,18 @@
 # Changelog
 
 
+## [0.2.0] (2026-11-25)
+
+
+### Features
+
+* **launcher:** calculate arithmetic expressions (#16)
+* **screenshot:** add mosaic markup (#18)
+
+### Fixes
+
+* **screenshot:** capture the screen before the selection overlay (#17)
+* **search:** match Chinese app names with pinyin (#19)
 ## [0.1.1] (2026-10-18)
 
 
