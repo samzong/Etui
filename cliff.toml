@@ -24,7 +24,6 @@ commit_preprocessors = [
 commit_parsers = [
   { sha = "7503352fd05e1be43a45d62ae88bb74dab10f8d4", skip = true },
   { sha = "8e3ac5320d1d4fd9d16c2a97cc6b79a0ff9cb77c", skip = true },
-  { sha = "f7780d8bb7d64d05dc424b05b1292444a068ce", skip = true },
   { message = "^chore\\(release\\)", skip = true },
   { message = "^Merge ", skip = true },
   { message = "^[a-z]+(\\(.+\\))?!:", group = "<!-- 0 -->BREAKING CHANGES" },
