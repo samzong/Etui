@@ -4,6 +4,7 @@ import Darwin
 @main
 struct Main {
     @MainActor static func main() {
+        LaunchEnvironment.sanitize()
         if CommandLine.arguments.dropFirst().first == "--display-guardian" {
             ExternalDisplay.runGuardian()
             return
