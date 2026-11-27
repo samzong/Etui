@@ -20,6 +20,10 @@ To test vertical tiling, run Etui with Accessibility access and focus a resizabl
 Press ⇧⌘↑, then ⇧⌘↓. The window fills the top half, then the bottom half of its screen's available area.
 Repeat either shortcut. The window stays in that half. Test both portrait and landscape displays.
 
+Etui shows Beijing time (`HH:mm`) in the menu bar. Click the time to view active Surge requests by process. Search `clock` or `beijing` in the launcher to hide or show it. When hidden, Etui removes the menu bar item and stops Surge polling.
+
+To test the menu bar clock, run Etui and click the Beijing time in the menu bar. The popup opens with active Surge request counts. Press Escape to close the popup. Search `clock` in the launcher and press Return to hide or restore the menu bar item.
+
 The launcher lists apps, Finder, and System Settings panes. Search matches exact, prefix, and word-prefix, then ranks by usage; launching learns the typed query as an alias. List bundle identifiers in `hidden.json` to hide entries.
 
 Search `awake` to toggle Keep Awake, which starts enabled and prevents idle display and system sleep while Etui runs. Search `lid` for the separate Keep Running with Lid Closed setting. It requires administrator authorization and changes the system-wide `pmset disablesleep` setting on battery and power, including manual Sleep, and can block software sleep for low battery or overheating. The launcher reads the actual kernel state each time it opens and verifies each change. This setting stays enabled after quitting Etui or restarting; search `lid` and select Allow Sleep with Lid Closed to turn it off before putting your Mac in a bag. Cancelling authorization leaves the setting unchanged. No background service is installed.

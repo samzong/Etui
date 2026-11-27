@@ -397,6 +397,8 @@ final class PanelContent: NSView {
             image = NSImage(systemSymbolName: on ? "cup.and.saucer.fill" : "cup.and.saucer", accessibilityDescription: nil)
         case .externalDisplay:
             image = NSImage(systemSymbolName: "display.2", accessibilityDescription: nil)
+        case .menuBarClock(let on):
+            image = NSImage(systemSymbolName: on ? "clock.fill" : "clock", accessibilityDescription: nil)
         case .closedLid:
             image = NSImage(systemSymbolName: "laptopcomputer", accessibilityDescription: nil)
         case .clean:
