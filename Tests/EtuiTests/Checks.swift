@@ -1372,3 +1372,90 @@ private func present(_ url: URL) -> Bool {
         #expect(report.skipped.contains("LarkInternational (running)"))
     }
 }
+
+@Suite struct MenuBarChecks {
+    @MainActor @Test func clockFormatsFixedBeijingTimeAndPersistsToggle() throws {
+        _ = NSApplication.shared
+        let firstDate = Date(timeIntervalSince1970: 1_795_771_500)
+        let crossDayDate = Date(timeIntervalSince1970: 1_795_799_100)
+        #expect(MenuBarPolicy.clockText(at: firstDate) == "17:25")
+        #expect(MenuBarPolicy.dateText(at: firstDate) == "Beijing (UTC+8) · 2026-11-27 Fri")
+        #expect(MenuBarPolicy.clockText(at: crossDayDate) == "01:05")
+        #expect(MenuBarPolicy.dateText(at: crossDayDate) == "Beijing (UTC+8) · 2026-11-28 Sat")
+
+        let suite = "me.samzong.etui.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let snapshot = SurgeSnapshot(total: 12, processes: [SurgeSnapshot.ProcessCount(name: "Feishu", count: 12)])
+        let menuBar = MenuBar(defaults: defaults, now: { firstDate }, source: { snapshot })
+        defer { menuBar.stop() }
+        #expect(menuBar.enabled)
+        menuBar.start()
+        #expect(menuBar.isShowingItem)
+        #expect(menuBar.currentTitle == "17:25")
+
+        menuBar.togglePopup()
+        #expect(menuBar.panel.isVisible)
+        menuBar.applySample(snapshot)
+        #expect(menuBar.panel.renderedState == .ready(snapshot))
+
+        let escape = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0,
+                                                  context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        menuBar.panel.keyDown(with: escape)
+        #expect(!menuBar.panel.isVisible)
+
+        menuBar.set(false)
+        #expect(!menuBar.enabled)
+        #expect(!menuBar.isShowingItem)
+
+        let reloaded = MenuBar(defaults: defaults, now: { crossDayDate }, source: { nil })
+        defer { reloaded.stop() }
+        #expect(!reloaded.enabled)
+        reloaded.start()
+        #expect(!reloaded.isShowingItem)
+        reloaded.set(true)
+        #expect(reloaded.isShowingItem)
+        #expect(reloaded.currentTitle == "01:05")
+
+        let history = History()
+        let entries = [Entry.menuBarClock(true)]
+        for query in ["beijing", "clock", "shijian", "lianjieshu"] {
+            #expect(Rank.query(query, apps: entries, history: history, now: 0).map(\.id) == ["internal.menubar-clock"], "\(query)")
+        }
+    }
+
+    @Test func surgeSourceRollsUpAppBundlesAndBoundsProcessRows() throws {
+        let payload = """
+        {"requests":[
+          {"processPath":"/Applications/Feishu.app/Contents/Frameworks/Lark Framework.framework/Versions/147.0/Helpers/Lark Helper.app/Contents/MacOS/Lark Helper","completed":false},
+          {"processPath":"/Applications/Feishu.app/Contents/MacOS/Feishu","completed":false},
+          {"processPath":"/Applications/Feishu.app/Contents/MacOS/Feishu","completed":true},
+          {"processPath":"/Applications/Antigravity.app/Contents/Resources/bin/language_server","completed":false},
+          {"processPath":"/opt/homebrew/bin/limactl","completed":false},
+          {"processPath":"/usr/bin/curl"},
+          {"processPath":"/usr/bin/ssh"},
+          {"processPath":"/usr/bin/git"},
+          {"processPath":"/usr/bin/python3"},
+          {"processPath":"/usr/bin/ruby"},
+          {"processPath":"/usr/bin/swift"},
+          {"processPath":""}
+        ]}
+        """
+        let snapshot = try #require(SurgeSource.parse(Data(payload.utf8)))
+        #expect(snapshot.total == 11)
+        #expect(snapshot.processes.count == MenuBarPolicy.maxProcessRows)
+        #expect(snapshot.processes.first == SurgeSnapshot.ProcessCount(name: "Feishu", count: 2))
+        #expect(snapshot.processes.last == SurgeSnapshot.ProcessCount(name: "Other (3)", count: 3))
+        #expect(snapshot.processes.reduce(0) { $0 + $1.count } == snapshot.total)
+
+        #expect(MenuBarPolicy.color(for: nil) == nil)
+        #expect(MenuBarPolicy.color(for: 500) == nil)
+        #expect(MenuBarPolicy.color(for: 501) == .systemYellow)
+        #expect(MenuBarPolicy.color(for: 800) == .systemYellow)
+        #expect(MenuBarPolicy.color(for: 801) == .systemRed)
+
+        #expect(SurgeSource.parse(Data("not json".utf8)) == nil)
+        #expect(SurgeSource(executable: "/usr/bin/false", timeout: 1).read() == nil)
+    }
+}

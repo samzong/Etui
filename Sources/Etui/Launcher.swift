@@ -21,6 +21,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     private var awake: NSObjectProtocol?
     private let closedLid = ClosedLid()
     private let externalDisplay = ExternalDisplay()
+    private let menuBar = MenuBar()
 
     private static let shortcuts: [(key: Int, modifiers: Int, label: String, run: @MainActor (Launcher) -> Void)] = [
         (kVK_Space, cmdKey, "Command+Space", { $0.toggle() }),
@@ -57,6 +58,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
         registerShortcuts()
         clipboard.start()
         externalDisplay.start()
+        menuBar.start()
         awake = Launcher.keepAwake()
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { [weak self] event in
             self?.handle(event) == false ? nil : event
@@ -114,6 +116,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
 
     func applicationWillTerminate(_: Notification) {
         externalDisplay.stop()
+        menuBar.stop()
         hotkeys.forEach { UnregisterEventHotKey($0) }
         if let handler {
             RemoveEventHandler(handler)
@@ -138,7 +141,7 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
     private func present() {
         let hidden = Store.hidden()
         catalog = Catalog.applyDisplayNames(Catalog.scan().filter { $0.kind == .quit || !hidden.contains($0.id as NSString) })
-            + [.awake(awake != nil), .closedLid(closedLid.state), .externalDisplay(externalDisplay.enabled), .clean()]
+            + [.awake(awake != nil), .closedLid(closedLid.state), .externalDisplay(externalDisplay.enabled), .menuBarClock(menuBar.enabled), .clean()]
         content.clear()
         shown = true
         refresh()
@@ -289,6 +292,8 @@ final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFi
                 NSApp.activate(ignoringOtherApps: true)
                 alert.runModal()
             }
+        case .menuBarClock:
+            menuBar.set(!menuBar.enabled)
         case .clean:
             Clean.run()
         case .target, .calculation:

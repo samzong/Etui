@@ -9,6 +9,7 @@ enum Kind: Equatable {
     case awake(Bool)
     case closedLid(ClosedLidState)
     case externalDisplay(Bool)
+    case menuBarClock(Bool)
     case clean
     case calculation(String)
 }
@@ -42,6 +43,13 @@ struct Entry {
     static func externalDisplay(_ on: Bool) -> Entry {
         Entry(id: "internal.external-display", name: on ? "Keep Built-in Display On" : "Turn Off Built-in Display with External Monitor",
               aliases: ["display", "monitor", "screen", "external", "builtin", "内屏", "外接屏"], path: "", kind: .externalDisplay(on))
+    }
+
+    static func menuBarClock(_ on: Bool) -> Entry {
+        Entry(id: "internal.menubar-clock", name: on ? "Hide Beijing Time in Menu Bar" : "Show Beijing Time in Menu Bar",
+              aliases: ["clock", "time", "timezone", "beijing", "menubar", "status", "surge", "connections", "slype",
+                        "shijian", "shiqu", "beijingshijian", "lianjieshu", "caidanlan", "时间", "时区", "北京时间", "连接数", "菜单栏"],
+              path: "", kind: .menuBarClock(on))
     }
 
     static func clean() -> Entry {
