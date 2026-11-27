@@ -1,14 +1,19 @@
 import AppKit
 
 enum Edge {
-    case left, right
+    case left, right, top, bottom
 }
 
 enum Tile {
     private static let slop: CGFloat = 8
 
     static func stages(_ edge: Edge, screen: CGRect) -> [CGRect] {
-        [(1, 2), (2, 3), (1, 3), (1, 1)].map { numerator, denominator in
+        if edge == .top || edge == .bottom {
+            let height = (screen.height / 2).rounded()
+            return [CGRect(x: screen.minX, y: edge == .top ? screen.maxY - height : screen.minY,
+                           width: screen.width, height: height)]
+        }
+        return [(1, 2), (2, 3), (1, 3), (1, 1)].map { numerator, denominator in
             let width = (screen.width * numerator / denominator).rounded()
             return CGRect(x: edge == .left ? screen.minX : screen.maxX - width,
                           y: screen.minY, width: width, height: screen.height)

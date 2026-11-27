@@ -11,9 +11,14 @@ A macOS launcher, clipboard history, window tiler, translator, and screenshot to
 | ⌘Space | Launcher |
 | ⌘⇧V | Clipboard history |
 | ⇧⌥; / ⇧⌥' | Tile window left / right; repeat to cycle 1/2, 2/3, 1/3, full |
+| ⇧⌘↑ / ⇧⌘↓ | Tile window to the top / bottom half |
 | ⇧⌥[ / ⇧⌥] | Move window to previous / next screen |
 | ⌥D / ⌥A | Translate selection / open empty translator |
 | ⌃⌘A | Capture an area or window |
+
+To test vertical tiling, run Etui with Accessibility access and focus a resizable window.
+Press ⇧⌘↑, then ⇧⌘↓. The window fills the top half, then the bottom half of its screen's available area.
+Repeat either shortcut. The window stays in that half. Test both portrait and landscape displays.
 
 The launcher lists apps, Finder, and System Settings panes. Search matches exact, prefix, and word-prefix, then ranks by usage; launching learns the typed query as an alias. List bundle identifiers in `hidden.json` to hide entries.
 
