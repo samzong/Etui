@@ -706,6 +706,21 @@ private actor SleepBackend {
         }
     }
 
+    @Test func verticalHalves() {
+        for screen in [CGRect(x: 0, y: 0, width: 1800, height: 900),
+                       CGRect(x: -1440, y: 80, width: 1440, height: 2511)] {
+            let top = Tile.next(.top, current: .zero, screen: screen)
+            let bottom = Tile.next(.bottom, current: .zero, screen: screen)
+            #expect(top.width == screen.width && bottom.width == screen.width)
+            #expect(top.minX == screen.minX && bottom.minX == screen.minX)
+            #expect(top.maxY == screen.maxY && bottom.minY == screen.minY)
+            #expect(top.height == (screen.height / 2).rounded() && bottom.height == top.height)
+            #expect(abs(top.minY - bottom.maxY) <= 1)
+            #expect(Tile.next(.top, current: top, screen: screen) == top)
+            #expect(Tile.next(.bottom, current: bottom, screen: screen) == bottom)
+        }
+    }
+
     @Test func screenShift() throws {
         let left = CGRect(x: 0, y: 0, width: 1800, height: 900)
         let right = CGRect(x: 1800, y: 100, width: 1200, height: 800)
