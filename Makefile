@@ -61,7 +61,7 @@ install: app ## Replace /Applications/Etui.app and launch it
 	-pkill -f "$(TARGET)/Contents/MacOS/Etui"
 	rm -rf "$(TARGET)"
 	cp -R "$(APP)" "$(TARGET)"
-	open "$(TARGET)"
+	env -i HOME="$$HOME" USER="$$USER" LOGNAME="$${LOGNAME:-$$USER}" SHELL="$${SHELL:-/bin/zsh}" TMPDIR="$${TMPDIR:-/tmp}" $${SSH_AUTH_SOCK:+SSH_AUTH_SOCK="$$SSH_AUTH_SOCK"} PATH="/usr/bin:/bin:/usr/sbin:/sbin" open "$(TARGET)"
 
 uninstall: ## Quit and remove /Applications/Etui.app
 	-pkill -f "$(TARGET)/Contents/MacOS/Etui"

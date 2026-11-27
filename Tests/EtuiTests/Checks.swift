@@ -739,6 +739,44 @@ private actor SleepBackend {
         #expect(moved == CGRect(x: 2100, y: 300, width: 600, height: 400))
         #expect(Tile.relocated(moved, from: right, to: left) == window)
     }
+
+    @Test func launchEnvironmentStripsInheritedVariables() {
+        var env = [
+            "COMMAND_MODE": "unix2003",
+            "HOME": "/Users/x",
+            "LANG": "en_US.UTF-8",
+            "LC_CTYPE": "UTF-8",
+            "LOGNAME": "x",
+            "SHELL": "/bin/zsh",
+            "SSH_AUTH_SOCK": "/tmp/agent.sock",
+            "TMPDIR": "/tmp",
+            "USER": "x",
+            "XPC_FLAGS": "0x0",
+            "XPC_SERVICE_NAME": "0",
+            "__CFBundleIdentifier": "me.samzong.etui",
+            "__CF_USER_TEXT_ENCODING": "0x1F5:0x0:0x0",
+            "PATH": "/custom/shim:/usr/bin",
+            "ELECTRON_RUN_AS_NODE": "1",
+            "NODE_OPTIONS": "--inspect",
+            "DYLD_INSERT_LIBRARIES": "/tmp/hook.dylib",
+            "TOKENER_DEV_KEY": "secret",
+            "MAKEFLAGS": "w",
+        ]
+        LaunchEnvironment.sanitize(
+            keys: Array(env.keys),
+            unset: { env.removeValue(forKey: $0) },
+            set: { env[$0] = $1 }
+        )
+        #expect(env["ELECTRON_RUN_AS_NODE"] == nil)
+        #expect(env["NODE_OPTIONS"] == nil)
+        #expect(env["DYLD_INSERT_LIBRARIES"] == nil)
+        #expect(env["TOKENER_DEV_KEY"] == nil)
+        #expect(env["MAKEFLAGS"] == nil)
+        #expect(env["PATH"] == LaunchEnvironment.standardPath)
+        #expect(env["HOME"] == "/Users/x")
+        #expect(env["LC_CTYPE"] == "UTF-8")
+        #expect(env["SSH_AUTH_SOCK"] == "/tmp/agent.sock")
+    }
 }
 
 struct ScreenshotChecks {

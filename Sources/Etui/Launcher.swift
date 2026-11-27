@@ -1,6 +1,27 @@
 import AppKit
 import Carbon
+import Darwin
 import ServiceManagement
+
+enum LaunchEnvironment {
+    static let standardPath = "/usr/bin:/bin:/usr/sbin:/sbin"
+    private static let allowed: Set<String> = [
+        "COMMAND_MODE", "HOME", "LANG", "LOGNAME", "SHELL",
+        "SSH_AUTH_SOCK", "TMPDIR", "USER", "XPC_FLAGS",
+        "XPC_SERVICE_NAME", "__CFBundleIdentifier", "__CF_USER_TEXT_ENCODING",
+    ]
+
+    static func sanitize(
+        keys: some Sequence<String> = ProcessInfo.processInfo.environment.keys,
+        unset: (String) -> Void = { _ = unsetenv($0) },
+        set: (String, String) -> Void = { _ = setenv($0, $1, 1) }
+    ) {
+        for key in keys where !allowed.contains(key) && !key.hasPrefix("LC_") {
+            unset(key)
+        }
+        set("PATH", standardPath)
+    }
+}
 
 final class Launcher: NSPanel, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate {
     private let content = PanelContent()
